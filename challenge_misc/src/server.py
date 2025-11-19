@@ -1,7 +1,14 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 import sys
 import os
 import math
+
+# 立即刷新输出缓冲
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+print("Welcome to Factor Selection Game!")
+sys.stdout.flush()
 
 class FactorGame:
     def __init__(self):
@@ -94,6 +101,7 @@ def play_game():
     print("- Game ends when counter reaches 0 or no moves left")
     print("- Highest score wins!")
     print("=" * 50)
+    sys.stdout.flush()
     
     while not game.is_game_over():
         state = game.get_game_state()
@@ -102,6 +110,7 @@ def play_game():
         print(f"Opponent score: {state['opponent_score']}")
         print(f"Moves remaining: {state['counter']}")
         print(f"Available numbers: {state['available_numbers'][:20]}{'...' if len(state['available_numbers']) > 20 else ''}")
+        sys.stdout.flush()
         
         try:
             print("\nEnter a number to choose (or 'quit' to exit):")
@@ -110,6 +119,7 @@ def play_game():
             
             if choice.lower() == 'quit':
                 print("Game quit!")
+                sys.stdout.flush()
                 return False
                 
             number = int(choice)
@@ -123,11 +133,14 @@ def play_game():
                     print(f"🤖 Opponent gained factors: {opponent_gains}")
             else:
                 print(f"❌ {message}")
+            sys.stdout.flush()
                 
         except ValueError:
             print("❌ Please enter a valid number")
+            sys.stdout.flush()
         except Exception as e:
             print(f"❌ Error: {e}")
+            sys.stdout.flush()
     
     # 游戏结束
     game.end_game()
@@ -137,10 +150,12 @@ def play_game():
     print("🎮 GAME OVER!")
     print(f"Your final score: {final_state['player_score']}")
     print(f"Opponent final score: {final_state['opponent_score']}")
+    sys.stdout.flush()
     
     # 检查是否获胜
     if final_state['player_score'] > final_state['opponent_score']:
         print("🎉 You win! Here's your flag:")
+        sys.stdout.flush()
         
         # 获取flag
         flag = None
@@ -154,9 +169,11 @@ def play_game():
             print(f"🏁 {flag}")
         else:
             print("🏁 sdpcsec{Ez_game_fun_default}")
+        sys.stdout.flush()
         return True
     else:
         print("💀 You lost! Try again to get the flag.")
+        sys.stdout.flush()
         return False
 
 def main():
@@ -173,4 +190,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
