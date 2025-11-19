@@ -25,6 +25,6 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: ./challenge_misc
+        context: .
         push: true
-        tags: ${{ secrets.REGISTRY_URL }}/v_challenge/challenge_misc:latest
+        tags: ${{ secrets.REGISTRY_URL }}/challenge_misc/challenge_misc:latest3
