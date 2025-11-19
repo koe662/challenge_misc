@@ -25,6 +25,6 @@ jobs:
     - name: Build and push Docker image
       uses: docker/build-push-action@v5
       with:
-        context: .
+        context: ./challenge_misc  # ← 修改这里！
         push: true
         tags: ${{ secrets.REGISTRY_URL }}/challenge_misc/challenge_misc:latest
