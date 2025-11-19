@@ -1,9 +1,0 @@
-﻿version: '3'
-services:
-  chal:
-    build: .
-    environment:
-      GZCTF_FLAG: "${GZCTF_FLAG}"
-    ports:
-      - "0:9999"
-    restart: unless-stopped
