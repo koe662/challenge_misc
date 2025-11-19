@@ -28,3 +28,4 @@ jobs:
         context: .
         push: true
         tags: ${{ secrets.REGISTRY_URL }}/v_challenge/challenge_misc:latest3
+        
