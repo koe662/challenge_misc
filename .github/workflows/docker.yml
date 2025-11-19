@@ -27,4 +27,4 @@ jobs:
       with:
         context: ./challenge_misc
         push: true
-        tags: ${{ secrets.REGISTRY_URL }}/v_challenge/challenge_misc:latest1
+        tags: ${{ secrets.REGISTRY_URL }}/v_challenge/challenge_misc:latest2
