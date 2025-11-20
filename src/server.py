@@ -2,6 +2,7 @@
 import sys
 import io
 import resource
+import os
 from contextlib import redirect_stdout, redirect_stderr
 
 # 设置资源限制
@@ -9,8 +10,10 @@ resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
 resource.setrlimit(resource.RLIMIT_AS, (64 * 1024 * 1024, 64 * 1024 * 1024))
 resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024))
 
-# 设置flag - 确保在根目录
-FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
+# 设置动态flag - 从环境变量获取
+FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}')
+
+# 写入flag文件
 with open('/flag', 'w') as f:
     f.write(FLAG)
 
@@ -19,7 +22,7 @@ def safe_exec(code):
     if len(code) > 200:
         return "Code too long (max 200 chars)"
     
-    # 只禁止真正危险的函数
+    # 只禁止真正危险的函数，允许__import__和popen
     blocked = ['eval', 'exec', 'open', 'file']
     if any(word in code.lower() for word in blocked):
         return "Dangerous code detected!"
@@ -79,7 +82,7 @@ def main():
 \033[92mWelcome to the SDPC Python Sandbox!\033[0m
 
 The 'os' module has been tampered with and is currently blocked.
-Your mission is to bypass this restriction and read the flag at /flag.
+Your mission is to bypass this restriction and execute system commands.
 
 \033[93m📖 Challenge Rules:\033[0m
 • Maximum 200 characters per input
