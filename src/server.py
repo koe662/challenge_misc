@@ -124,7 +124,7 @@ def safe_eval(code):
         'hex': hex,
         'oct': oct,
         'bin': bin,
-        '__import__': __import__,
+        
     }
     
     # 执行代码
