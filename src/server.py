@@ -11,11 +11,11 @@ FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{gu3ss_numb3r_g4m3_[TEAM_HASH]}')
 class GuessGame:
     def __init__(self):
         self.target_number = random.randint(1, 1000000)
-        self.attempts_left = 30
+        self.attempts_left = 20  # 改为20次
         self.game_over = False
         
     def guess(self, number):
-        """猜数字，有10%概率给出错误反馈"""
+        """猜数字，有10%概率给出错误的大小反馈"""
         if self.game_over:
             return "Game over! Please start a new game."
             
@@ -33,27 +33,27 @@ class GuessGame:
         
         self.attempts_left -= 1
         
-        # 10%概率给出错误反馈
+        # 10%概率给出错误的大小反馈
         give_wrong_feedback = random.random() < 0.1
         
         if guess_num == self.target_number:
             self.game_over = True
             return f"🎉 Congratulations! You guessed it! The number was {self.target_number}.\nHere's your flag: {FLAG}"
         
-        # 正常逻辑
+        # 正常逻辑：猜小了显示"Too small!"，猜大了显示"Too big!"
         if guess_num < self.target_number:
             correct_feedback = "Too small!"
         else:
             correct_feedback = "Too big!"
         
-        # 10%概率反转反馈
+        # 10%概率反转大小反馈（但用户不知道这是错误的）
         if give_wrong_feedback:
             if "small" in correct_feedback:
-                feedback = "Too big! (⚠️ Deceptive feedback)"
+                feedback = "Too big!"  # 实际上猜小了，但显示猜大了
             else:
-                feedback = "Too small! (⚠️ Deceptive feedback)"
+                feedback = "Too small!"  # 实际上猜大了，但显示猜小了
         else:
-            feedback = correct_feedback
+            feedback = correct_feedback  # 显示正确的反馈
         
         if self.attempts_left == 0:
             self.game_over = True
@@ -70,9 +70,6 @@ def handle_client(conn, addr):
 
 I'm thinking of a number between 1 and 1,000,000.
 You have {game.attempts_left} attempts to guess it.
-
-⚠️  WARNING: There's a 10% chance that the feedback 
-    (Too big/Too small) will be DECEPTIVE!
 
 Enter your guess (1-1000000) or 'quit' to exit:
 """
