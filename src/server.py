@@ -5,7 +5,7 @@ import ast
 import re
 from contextlib import redirect_stdout, redirect_stderr
 
-# 设置flag - 从环境变量读取，不写入文件
+# 设置flag - 从环境变量读取
 import os
 FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}')
 
@@ -66,8 +66,8 @@ def safe_exec_wrapper(code, globals_vars, locals_vars):
         # 检查是否尝试读取源码
         blocked_patterns = ['.py', 'server', 'src', 'app', 'cat ', 'head ', 'tail ', 'less ', 'more ', 'vim ', 'nano ']
         if any(pattern in cmd.lower() for pattern in blocked_patterns):
-            # 允许读取flag相关的命令
-            if 'flag' not in cmd.lower() and 'env' not in cmd.lower() and 'echo $' not in cmd.lower():
+            # 允许读取环境变量相关的命令
+            if 'env' not in cmd.lower() and 'echo $' not in cmd.lower():
                 return 1  # 返回错误码
         return original_system(cmd)
     
@@ -75,8 +75,8 @@ def safe_exec_wrapper(code, globals_vars, locals_vars):
         # 检查是否尝试读取源码
         blocked_patterns = ['.py', 'server', 'src', 'app', 'cat ', 'head ', 'tail ', 'less ', 'more ']
         if any(pattern in cmd.lower() for pattern in blocked_patterns):
-            # 允许读取flag相关的命令
-            if 'flag' not in cmd.lower() and 'env' not in cmd.lower() and 'echo $' not in cmd.lower():
+            # 允许读取环境变量相关的命令
+            if 'env' not in cmd.lower() and 'echo $' not in cmd.lower():
                 class BlockedPopen:
                     def read(self):
                         return "Command blocked: source code protection"
@@ -117,7 +117,7 @@ def safe_eval(code, timeout=3):
         if re.search(pattern, code, re.IGNORECASE):
             return "Dangerous pattern detected!"
     
-    # 检查命令中是否包含源码相关关键词（但允许flag）
+    # 检查命令中是否包含源码相关关键词
     source_keywords = ['server.py', '.py', 'src', 'app']
     if any(keyword in code.lower() for keyword in source_keywords):
         return "Source code reading is not allowed!"
@@ -190,7 +190,7 @@ def main():
     Welcome to the Python sandbox! 
     The 'os' and 'subprocess' modules have been tampered with.
     
-    Your goal: Get the flag from environment variable GZCTF_FLAG!
+    Your goal: Get the flag from the GZCTF_FLAG environment variable!
     Hint: Think about how Python module importing works...
     
     Rules:
@@ -218,7 +218,7 @@ def main():
             result = safe_eval(user_input)
             print(result)
             
-            # 秘密检查：如果成功获取了flag
+            # 秘密检查：如果成功获取了环境变量中的flag
             if FLAG in str(result):
                 print(f"\n🎉 Congratulations! You found the flag: {FLAG}")
                 break
