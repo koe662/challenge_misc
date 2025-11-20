@@ -5,7 +5,7 @@ WORKDIR /app
 # 创建目录结构
 RUN mkdir -p /app/src /app/service
 
-# 复制源代码
+# 复制文件
 COPY src/server.py /app/src/
 COPY service/docker-entrypoint.sh /app/service/
 
