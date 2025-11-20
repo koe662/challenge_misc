@@ -7,13 +7,20 @@ import socket
 import threading
 from contextlib import redirect_stdout, redirect_stderr
 
-# 设置flag
-import os
-FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}')
+# 打印启动信息到stderr（GZCTF日志可见）
+print("=== Python Jail Challenge Server Starting ===", file=sys.stderr)
+print(f"Python version: {sys.version}", file=sys.stderr)
 
-# 在flag路径写入flag
-with open('/flag', 'w') as f:
-    f.write(FLAG)
+# 检查flag文件
+try:
+    with open('/flag', 'r') as f:
+        FLAG = f.read().strip()
+    print(f"Flag loaded: {FLAG[:20]}...", file=sys.stderr)
+except Exception as e:
+    FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
+    print(f"Using default flag, error: {e}", file=sys.stderr)
+
+print("Server initialization complete", file=sys.stderr)
 
 # 危险的函数和属性
 DANGEROUS_BUILTINS = {
@@ -57,70 +64,23 @@ class SandboxVisitor(ast.NodeVisitor):
             raise SandboxError(f"Import from {node.module} is not allowed directly")
         self.generic_visit(node)
 
-def safe_exec_wrapper(code, globals_vars, locals_vars):
-    """安全的代码执行包装器，防止源码读取"""
-    import os
-    original_system = os.system
-    original_popen = os.popen
-    
-    def safe_system(cmd):
-        # 检查是否尝试读取源码
-        blocked_patterns = ['.py', 'server', 'src', 'app', 'cat ', 'head ', 'tail ', 'less ', 'more ', 'vim ', 'nano ']
-        if any(pattern in cmd.lower() for pattern in blocked_patterns):
-            if 'flag' not in cmd.lower():  # 允许读取flag
-                return 1  # 返回错误码
-        return original_system(cmd)
-    
-    def safe_popen(cmd):
-        # 检查是否尝试读取源码
-        blocked_patterns = ['.py', 'server', 'src', 'app', 'cat ', 'head ', 'tail ', 'less ', 'more ']
-        if any(pattern in cmd.lower() for pattern in blocked_patterns):
-            if 'flag' not in cmd.lower():  # 允许读取flag
-                class BlockedPopen:
-                    def read(self):
-                        return "Command blocked: source code protection"
-                    def __iter__(self):
-                        return iter([])
-                    def close(self):
-                        pass
-                return BlockedPopen()
-        return original_popen(cmd)
-    
-    # 替换系统函数
-    os.system = safe_system
-    os.popen = safe_popen
-    
-    try:
-        exec(code, globals_vars, locals_vars)
-    finally:
-        # 恢复原始函数
-        os.system = original_system
-        os.popen = original_popen
-
-def safe_eval(code, timeout=3):
+def safe_eval(code):
     """在受限环境中执行代码"""
     
     # 检查代码长度
     if len(code) > 500:
         return "Code too long (max 500 characters)"
     
-    # 检查危险字符串和源码读取
+    # 检查危险字符串
     dangerous_patterns = [
         r'open\s*\(', r'eval\s*\(', r'exec\s*\(', 
         r'compile\s*\(', r'import\s+os', r'from\s+os', 
         r'import\s+subprocess', r'from\s+subprocess',
-        r'server\.py', r'src/', r'app/',  # 禁止读取源码路径
     ]
     
     for pattern in dangerous_patterns:
         if re.search(pattern, code, re.IGNORECASE):
             return "Dangerous pattern detected!"
-    
-    # 检查命令中是否包含源码相关关键词（但允许flag）
-    source_keywords = ['server.py', '.py', 'src', 'app']
-    if any(keyword in code.lower() for keyword in source_keywords):
-        if 'flag' not in code.lower():  # 只有不包含flag时才阻止
-            return "Source code reading is not allowed!"
     
     # AST解析和检查
     try:
@@ -164,7 +124,7 @@ def safe_eval(code, timeout=3):
         'hex': hex,
         'oct': oct,
         'bin': bin,
-        '__import__': __import__,  # 允许使用__import__
+        '__import__': __import__,
     }
     
     # 执行代码
@@ -172,99 +132,105 @@ def safe_eval(code, timeout=3):
     global_vars = {'__builtins__': safe_builtins}
     
     try:
+        # 为每个执行单独设置被篡改的模块
+        original_os = sys.modules.get('os')
+        original_subprocess = sys.modules.get('subprocess')
+        
+        sys.modules['os'] = 'not allowed'
+        sys.modules['subprocess'] = 'not allowed'
+        
         # 重定向输出
         output = io.StringIO()
         with redirect_stdout(output), redirect_stderr(output):
-            safe_exec_wrapper(code, global_vars, local_vars)
+            exec(code, global_vars, local_vars)
         result = output.getvalue()
+        
+        # 恢复模块
+        if original_os:
+            sys.modules['os'] = original_os
+        if original_subprocess:
+            sys.modules['subprocess'] = original_subprocess
+            
         if not result:
             result = "Code executed successfully (no output)"
         return result
+        
     except Exception as e:
+        # 确保恢复模块即使在异常情况下
+        if original_os:
+            sys.modules['os'] = original_os
+        if original_subprocess:
+            sys.modules['subprocess'] = original_subprocess
         return f"Error during execution: {e}"
 
 def handle_client(conn, addr):
     """处理客户端连接"""
-    print(f"New connection from {addr}")
-    
-    # 为每个客户端连接单独设置被篡改的模块
-    import sys
-    original_os = sys.modules.get('os')
-    original_subprocess = sys.modules.get('subprocess')
-    
-    sys.modules['os'] = 'not allowed'
-    sys.modules['subprocess'] = 'not allowed'
+    print(f"New connection from {addr}", file=sys.stderr)
     
     try:
-        banner = b"""
-    \xf0\x9f\x94\x90 Python Jail Break Challenge
-    
-    Welcome to the Python sandbox! 
-    The 'os' and 'subprocess' modules have been tampered with.
-    
-    Your goal: Execute commands to read the flag at /flag!
-    Hint: Think about how Python module importing works...
-    
-    Rules:
-    - Maximum 500 characters per input
-    - No direct imports of os, subprocess, sys, importlib
-    - No reading source code files (.py files are protected)
-    - But del and __import__ are allowed!
-    
-    Enter your Python code (or 'quit' to exit):
-    >>> """
+        banner = b"""\nPython Jail Break Challenge\n\nWelcome to the Python sandbox!\nThe 'os' and 'subprocess' modules have been tampered with.\n\nYour goal: Execute commands to read the flag!\nHint: Think about how Python module importing works...\n\nRules:\n- Max 500 characters per input\n- No direct imports of os, subprocess, sys, importlib\n- But del and __import__ are allowed!\n\nEnter your Python code (or 'quit' to exit):\n>>> """
         conn.send(banner)
         
         while True:
             try:
-                data = conn.recv(1024).decode().strip()
+                data = conn.recv(1024).decode('utf-8', errors='ignore').strip()
                 if not data:
+                    print(f"Client {addr} disconnected", file=sys.stderr)
                     break
                     
                 if data.lower() in ['quit', 'exit', 'q']:
                     conn.send(b"Goodbye!\n")
                     break
                 
+                print(f"Received from {addr}: {data}", file=sys.stderr)
                 result = safe_eval(data)
+                print(f"Result for {addr}: {result}", file=sys.stderr)
                 
                 # 检查是否获取到flag
                 if FLAG in str(result):
                     result += f"\n\n🎉 Congratulations! You found the flag: {FLAG}"
+                    print(f"Flag captured by {addr}", file=sys.stderr)
                 
                 response = f"{result}\n>>> "
-                conn.send(response.encode())
+                conn.send(response.encode('utf-8'))
                 
-            except socket.error:
+            except socket.error as e:
+                print(f"Socket error with {addr}: {e}", file=sys.stderr)
                 break
             except Exception as e:
-                conn.send(f"Error: {e}\n>>> ".encode())
+                print(f"Error with {addr}: {e}", file=sys.stderr)
+                try:
+                    conn.send(f"Error: {e}\n>>> ".encode('utf-8'))
+                except:
+                    break
             
     except Exception as e:
-        print(f"Error with client {addr}: {e}")
+        print(f"Connection error with {addr}: {e}", file=sys.stderr)
     finally:
-        # 恢复原始模块
-        if original_os:
-            sys.modules['os'] = original_os
-        if original_subprocess:
-            sys.modules['subprocess'] = original_subprocess
-        conn.close()
-        print(f"Connection from {addr} closed")
+        try:
+            conn.close()
+        except:
+            pass
+        print(f"Connection from {addr} closed", file=sys.stderr)
 
-def start_server(host='0.0.0.0', port=9999):
+def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((host, port))
+    server.bind(('0.0.0.0', 9999))
     server.listen(5)
-    print(f"Server listening on {host}:{port}")
+    print("Server listening on 0.0.0.0:9999", file=sys.stderr)
     
     try:
         while True:
             conn, addr = server.accept()
+            print(f"Accepted connection from {addr}", file=sys.stderr)
             client_thread = threading.Thread(target=handle_client, args=(conn, addr))
             client_thread.daemon = True
             client_thread.start()
     except KeyboardInterrupt:
-        print("\nShutting down server...")
+        print("\nShutting down server...", file=sys.stderr)
+    except Exception as e:
+        print(f"Server error: {e}", file=sys.stderr)
     finally:
         server.close()
 
