@@ -5,5 +5,5 @@ services:
     environment:
       GZCTF_FLAG: "${GZCTF_FLAG}"
     ports:
-      - "0:9999"
+      - "32874:9999"  # 固定端口映射
     restart: unless-stopped
