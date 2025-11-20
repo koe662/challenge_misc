@@ -3,7 +3,12 @@ services:
   chal:
     build: .
     environment:
-      GZCTF_FLAG: "${GZCTF_FLAG}"
+      FLAG: "${GZCTF_FLAG}"  # 关键1：传py文件能识别的环境变量名（py读"FLAG"）
     ports:
-      - "0:9999"
+      - "0:8080"  # 关键2：容器端口对齐py文件监听端口（py监听8080）
     restart: unless-stopped
+    # 关键3：权限配置（解决Permission denied，兼容py文件的/app/flag.txt）
+    user: "1000:1000"  # 对应Dockerfile里创建的ctf用户（uid=1000,gid=1000）
+    cap_drop: [ALL]  # 安全加固：禁用所有特权
+    tmpfs: /tmp  # 临时目录挂载，避免读写冲突
+    read_only: false  # 允许写入/app/flag.txt（py文件需要创建该文件）
