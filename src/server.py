@@ -3,24 +3,24 @@ import sys
 import io
 import ast
 import re
-import socket
-import threading
 from contextlib import redirect_stdout, redirect_stderr
 
-# 打印启动信息到stderr（GZCTF日志可见）
-print("=== Python Jail Challenge Server Starting ===", file=sys.stderr)
-print(f"Python version: {sys.version}", file=sys.stderr)
+# 打印启动信息
+print("=== Python Jail Challenge ===", file=sys.stderr)
 
 # 检查flag文件
 try:
     with open('/flag', 'r') as f:
         FLAG = f.read().strip()
-    print(f"Flag loaded: {FLAG[:20]}...", file=sys.stderr)
-except Exception as e:
+    print(f"Flag loaded", file=sys.stderr)
+except:
     FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
-    print(f"Using default flag, error: {e}", file=sys.stderr)
+    print("Using default flag", file=sys.stderr)
 
-print("Server initialization complete", file=sys.stderr)
+# 篡改sys.modules中的os模块
+import sys
+sys.modules['os'] = 'not allowed'
+sys.modules['subprocess'] = 'not allowed'
 
 # 危险的函数和属性
 DANGEROUS_BUILTINS = {
@@ -163,76 +163,53 @@ def safe_eval(code):
             sys.modules['subprocess'] = original_subprocess
         return f"Error during execution: {e}"
 
-def handle_client(conn, addr):
-    """处理客户端连接"""
-    print(f"New connection from {addr}", file=sys.stderr)
+def main():
+    banner = """
+    🔐 Python Jail Break Challenge
     
-    try:
-        banner = b"""\nPython Jail Break Challenge\n\nWelcome to the Python sandbox!\nThe 'os' and 'subprocess' modules have been tampered with.\n\nYour goal: Execute commands to read the flag!\nHint: Think about how Python module importing works...\n\nRules:\n- Max 500 characters per input\n- No direct imports of os, subprocess, sys, importlib\n- But del and __import__ are allowed!\n\nEnter your Python code (or 'quit' to exit):\n>>> """
-        conn.send(banner)
-        
-        while True:
-            try:
-                data = conn.recv(1024).decode('utf-8', errors='ignore').strip()
-                if not data:
-                    print(f"Client {addr} disconnected", file=sys.stderr)
-                    break
-                    
-                if data.lower() in ['quit', 'exit', 'q']:
-                    conn.send(b"Goodbye!\n")
-                    break
-                
-                print(f"Received from {addr}: {data}", file=sys.stderr)
-                result = safe_eval(data)
-                print(f"Result for {addr}: {result}", file=sys.stderr)
-                
-                # 检查是否获取到flag
-                if FLAG in str(result):
-                    result += f"\n\n🎉 Congratulations! You found the flag: {FLAG}"
-                    print(f"Flag captured by {addr}", file=sys.stderr)
-                
-                response = f"{result}\n>>> "
-                conn.send(response.encode('utf-8'))
-                
-            except socket.error as e:
-                print(f"Socket error with {addr}: {e}", file=sys.stderr)
-                break
-            except Exception as e:
-                print(f"Error with {addr}: {e}", file=sys.stderr)
-                try:
-                    conn.send(f"Error: {e}\n>>> ".encode('utf-8'))
-                except:
-                    break
-            
-    except Exception as e:
-        print(f"Connection error with {addr}: {e}", file=sys.stderr)
-    finally:
+    Welcome to the Python sandbox! 
+    The 'os' and 'subprocess' modules have been tampered with.
+    
+    Your goal: Execute commands to read the flag at /flag!
+    Hint: Think about how Python module importing works...
+    
+    Rules:
+    - Maximum 500 characters per input
+    - No direct imports of os, subprocess, sys, importlib
+    - But del and __import__ are allowed!
+    
+    Enter your Python code (or 'quit' to exit):
+    """
+    
+    print(banner)
+    
+    while True:
         try:
-            conn.close()
-        except:
-            pass
-        print(f"Connection from {addr} closed", file=sys.stderr)
-
-def start_server():
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('0.0.0.0', 9999))
-    server.listen(5)
-    print("Server listening on 0.0.0.0:9999", file=sys.stderr)
-    
-    try:
-        while True:
-            conn, addr = server.accept()
-            print(f"Accepted connection from {addr}", file=sys.stderr)
-            client_thread = threading.Thread(target=handle_client, args=(conn, addr))
-            client_thread.daemon = True
-            client_thread.start()
-    except KeyboardInterrupt:
-        print("\nShutting down server...", file=sys.stderr)
-    except Exception as e:
-        print(f"Server error: {e}", file=sys.stderr)
-    finally:
-        server.close()
+            user_input = input(">>> ").strip()
+            
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("Goodbye!")
+                break
+            
+            if not user_input:
+                continue
+                
+            result = safe_eval(user_input)
+            print(result)
+            
+            # 秘密检查：如果成功执行了系统命令并获取了flag
+            if FLAG in str(result):
+                print(f"\n🎉 Congratulations! You found the flag: {FLAG}")
+                break
+                
+        except KeyboardInterrupt:
+            print("\nGoodbye!")
+            break
+        except EOFError:
+            print("\nGoodbye!")
+            break
+        except Exception as e:
+            print(f"Unexpected error: {e}")
 
 if __name__ == '__main__':
-    start_server()
+    main()
