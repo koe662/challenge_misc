@@ -12,9 +12,6 @@ resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024))
 # 设置flag
 FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
 
-# 篡改os模块
-sys.modules['os'] = 'not allowed'
-
 def safe_exec(code):
     """安全执行用户代码"""
     if len(code) > 200:
@@ -25,16 +22,17 @@ def safe_exec(code):
     if any(word in code.lower() for word in blocked):
         return "Dangerous code detected!"
     
-    # 安全的内置函数（包含__import__允许popen）
+    # 安全的内置函数（不包含os模块）
     safe_builtins = {
         'print': print, 'len': len, 'str': str, 'int': int, 'chr': chr, 'ord': ord,
         'list': list, 'dict': dict, 'range': range, 'sum': sum, 'max': max, 'min': min,
-        '__import__': __import__  # 允许使用__import__来调用popen
+        '__import__': __import__,  # 允许使用__import__
+        'sys': sys  # 添加sys模块
     }
     
     # 执行代码
     local_vars = {}
-    global_vars = {'__builtins__': safe_builtins}
+    global_vars = {'__builtins__': safe_builtins, 'sys': sys}
     
     try:
         output = io.StringIO()
@@ -53,6 +51,10 @@ def safe_exec(code):
         return result if result else "Code executed (no output)"
         
     except Exception as e:
+        # 确保恢复模块即使在异常情况下
+        original_os = sys.modules.get('os')
+        if original_os:
+            sys.modules['os'] = original_os
         return f"Error: {e}"
 
 def main():
@@ -60,19 +62,19 @@ def main():
 \033[94m
 ╔══════════════════════════════════════════════╗
 ║                                              ║
-║    ███████╗██████╗ ██████╗  ██████╗███████╗  ║
-║    ██╔════╝██╔══██╗██╔══██╗██╔════╝██╔════╝  ║
-║    ███████╗██║  ██║██████╔╝██║     █████╗    ║
-║    ╚════██║██║  ██║██╔══██╗██║     ██╔══╝    ║
-║    ███████║██████╔╝██║  ██║╚██████╗███████╗  ║
-║    ╚══════╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝  ║
+║    ███████╗██████╗ ██████╗  ██████╗         ║
+║    ██╔════╝██╔══██╗██╔══██╗██╔════╝         ║
+║    ███████╗██║  ██║██████╔╝██║              ║
+║    ╚════██║██║  ██║██╔══██╗██║              ║
+║    ███████║██████╔╝██║  ██║╚██████╗         ║
+║    ╚══════╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝         ║
 ║                                              ║
-║        Python Jail Break Challenge           ║
+║         Python Jail Break Challenge          ║
 ║                                              ║
 ╚══════════════════════════════════════════════╝
 \033[0m
 
-\033[92mWelcome to the SDPCSEC Python Sandbox!\033[0m
+\033[92mWelcome to the SDPC Python Sandbox!\033[0m
 
 The 'os' module has been tampered with and is currently blocked.
 Your mission is to bypass this restriction and execute system commands.
