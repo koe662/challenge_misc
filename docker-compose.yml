@@ -1,20 +1,9 @@
-version: '3.8'
-
+version: '3'
 services:
-  guess-game:
+  chal:
     build: .
-    container_name: guess_number_game
     environment:
-      - GZCTF_FLAG=${GZCTF_FLAG}
+      GZCTF_FLAG: "${GZCTF_FLAG}"
     ports:
-      - "32873:9999"
+      - "0:9999"
     restart: unless-stopped
-    read_only: true
-    tmpfs:
-      - /tmp:size=10M,noexec
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-    mem_limit: 128m
-    cpus: 0.5
