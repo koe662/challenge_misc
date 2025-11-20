@@ -1,23 +1,24 @@
 import sys
 import time
 import resource
+import os as real_os  # 保存真实os模块引用（用于初始化flag）
 from types import ModuleType
 from io import StringIO
 import ast
+import socket
+import os as sys_os  # 避免命名冲突
 
-# ==================== 全局配置（严格锁定）====================
-# 唯一允许的模块（解题必需）
+# ==================== GZCTF配置（适配平台）====================
+FLAG_FILE = "/flag.txt"  # 兼容原有解题路径
+LISTEN_PORT = 8080  # GZCTF默认映射端口
 ALLOWED_MODULES = {"sys", "importlib", "os"}
-# 唯一允许访问的文件
-ALLOWED_FILES = {"/flag.txt"}
-# 重新导入os后，唯一允许的方法（解题必需）
+ALLOWED_FILES = {FLAG_FILE}
 ALLOWED_OS_METHODS = {"open", "read", "close", "O_RDONLY"}
-# 执行限制
-EXEC_TIMEOUT = 1.5  # 执行超时（留足解题时间）
-MAX_OUTPUT_SIZE = 10240  # 最大输出10KB
-MAX_MEMORY = 67108864  # 最大内存64MB
+EXEC_TIMEOUT = 1.5
+MAX_OUTPUT_SIZE = 10240
+MAX_MEMORY = 67108864  # 64MB
 
-# 危险模块/方法/关键词（全面封堵）
+# 危险列表（全面封堵）
 DANGEROUS_MODULES = {
     "subprocess", "ctypes", "ctypes.util", "socket", "select",
     "fcntl", "pty", "tty", "multiprocessing", "threading",
@@ -36,7 +37,23 @@ DANGEROUS_KEYWORDS = {
     "unshare", "fork", "exec", "socket", "ctypes", "subprocess"
 }
 
-# ==================== 1. 伪造初始OS模块（基础拦截）====================
+# ==================== 1. GZCTF Flag初始化（从环境变量注入）====================
+def init_flag():
+    """从GZCTF环境变量FLAG读取，写入/flag.txt"""
+    flag = real_os.getenv("FLAG", "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}")  # 默认测试flag
+    try:
+        # 以只读模式创建/flag.txt（非root用户可写）
+        with real_os.fdopen(real_os.open(FLAG_FILE, real_os.O_WRONLY | real_os.O_CREAT, 0o444), "w") as f:
+            f.write(flag.strip())
+        print(f"[INFO] Flag已注入：{FLAG_FILE}")
+    except Exception as e:
+        print(f"[ERROR] Flag注入失败：{str(e)}")
+        sys.exit(1)
+
+# 初始化Flag（仅在启动时执行一次）
+init_flag()
+
+# ==================== 2. 伪造初始OS模块====================
 class FakeOs:
     def __getattr__(self, name):
         raise AttributeError(f"❌ 伪造os模块无此属性：{name}（请删除sys.modules['os']后重新导入）")
@@ -44,38 +61,30 @@ class FakeOs:
 # 初始篡改os模块缓存
 sys.modules['os'] = FakeOs()
 
-# ==================== 2. AST语义检测（精准封堵危险操作）====================
+# ==================== 3. AST语义检测====================
 class DangerousCodeDetector(ast.NodeVisitor):
-    """解析代码AST，精准检测非合法操作"""
     def __init__(self):
         self.has_dangerous = False
         self.dangerous_reason = ""
 
     def visit_Call(self, node):
-        # 检测危险函数调用（如subprocess.run、os.system）
         func = node.func
-        # 检测属性调用（如os.system、obj.method）
         if isinstance(func, ast.Attribute):
-            # 禁止调用危险模块的方法（如subprocess.check_output）
             if isinstance(func.value, ast.Name) and func.value.id in DANGEROUS_MODULES:
                 self.has_dangerous = True
                 self.dangerous_reason = f"禁止调用危险模块方法：{func.value.id}.{func.attr}"
-            # 禁止调用os的危险方法（即使通过反射）
             if isinstance(func.value, ast.Name) and func.value.id == "os" and func.attr in DANGEROUS_OS_METHODS:
                 self.has_dangerous = True
                 self.dangerous_reason = f"禁止调用os危险方法：os.{func.attr}"
-            # 禁止调用sys的敏感属性（如sys.meta_path.append）
             if isinstance(func.value, ast.Name) and func.value.id == "sys" and func.attr in ["meta_path", "modules", "settrace"]:
                 self.has_dangerous = True
                 self.dangerous_reason = f"禁止操作sys敏感属性：sys.{func.attr}"
-        # 检测内置函数调用（如getattr、setattr）
         if isinstance(func, ast.Name) and func.id in ["getattr", "setattr", "delattr", "eval", "exec"]:
             self.has_dangerous = True
             self.dangerous_reason = f"禁止使用危险内置函数：{func.id}"
         self.generic_visit(node)
 
     def visit_Str(self, node):
-        # 检测敏感路径/关键词（如/proc、mount）
         for keyword in DANGEROUS_KEYWORDS:
             if keyword in node.s:
                 self.has_dangerous = True
@@ -83,7 +92,6 @@ class DangerousCodeDetector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Dict(self, node):
-        # 检测通过字典访问危险属性（如os.__dict__['system']）
         for key, value in zip(node.keys, node.values):
             if isinstance(key, ast.Str) and key.s in DANGEROUS_OS_METHODS:
                 self.has_dangerous = True
@@ -91,7 +99,6 @@ class DangerousCodeDetector(ast.NodeVisitor):
         self.generic_visit(node)
 
 def check_dangerous_code(user_code):
-    """检测用户代码是否包含危险操作"""
     detector = DangerousCodeDetector()
     try:
         tree = ast.parse(user_code)
@@ -105,58 +112,47 @@ def check_dangerous_code(user_code):
     except Exception:
         raise ValueError("❌ 检测到未知危险操作")
 
-# ==================== 3. 加固sys.modules（仅允许删除os）====================
+# ==================== 4. 加固sys.modules====================
 class RestrictedModulesDict:
-    """包装sys.modules，仅允许删除'os'键"""
     def __init__(self, original_modules):
         self.original = original_modules
 
     def __delitem__(self, key):
-        # 唯一允许删除的键：'os'
         if key != "os":
             raise KeyError(f"❌ 仅允许删除sys.modules['os']，禁止删除{key}")
-        # 确保删除的是伪造os模块（防止重复删除）
         if key in self.original and isinstance(self.original[key], FakeOs):
             del self.original[key]
         else:
             raise KeyError("❌ 无需重复删除sys.modules['os']")
 
     def __setitem__(self, key, value):
-        # 禁止添加任何模块到sys.modules
         raise ValueError("❌ 禁止修改sys.modules（添加模块）")
 
     def __getitem__(self, key):
-        # 禁止访问危险模块的缓存
         if key in DANGEROUS_MODULES:
             raise KeyError(f"❌ 禁止访问危险模块：{key}")
         return self.original[key]
 
     def __getattr__(self, attr):
-        # 禁止调用modules的危险方法（如clear、update）
         if attr in ["clear", "update", "pop", "popitem", "setdefault"]:
             raise AttributeError(f"❌ 禁止调用sys.modules.{attr}")
         return getattr(self.original, attr)
 
-# ==================== 4. 加固sys模块（冻结核心属性）====================
+# ==================== 5. 加固sys模块====================
 class RestrictedSys:
-    """包装sys模块，冻结核心属性，仅暴露安全功能"""
     def __init__(self, original_sys):
         self.original = original_sys
-        # 冻结sys的核心属性，禁止修改
         self.frozen_attrs = ["meta_path", "modules", "settrace", "setprofile", "path"]
 
     def __getattr__(self, name):
-        # 禁止访问敏感属性
         if name in ["socket", "fd", "fileno", "dup", "dup2", "call_tracing"]:
             raise AttributeError(f"❌ 禁止访问sys敏感属性：{name}")
-        # 返回原始属性，modules返回加固后的版本
         attr = getattr(self.original, name)
         if name == "modules":
             return RestrictedModulesDict(attr)
         return attr
 
     def __setattr__(self, name, value):
-        # 禁止修改冻结属性
         if name in self.frozen_attrs:
             raise AttributeError(f"❌ 禁止修改sys核心属性：{name}")
         if name == "original":
@@ -164,75 +160,59 @@ class RestrictedSys:
         else:
             raise AttributeError(f"❌ 禁止修改sys属性：{name}")
 
-# 替换sys为加固版本
 sys = RestrictedSys(sys)
 
-# ==================== 5. 加固os模块（仅允许4个解题必需方法）====================
+# ==================== 6. 加固os模块====================
 class SafeOs:
-    """包装真实os模块，仅暴露解题必需的方法"""
     def __init__(self, original_os):
         self.original = original_os
-        # 缓存允许的常量（O_RDONLY）
         self.O_RDONLY = original_os.O_RDONLY
 
     def __getattr__(self, name):
-        # 仅允许访问白名单方法
         if name not in ALLOWED_OS_METHODS:
             raise AttributeError(f"❌ os模块仅允许使用：{ALLOWED_OS_METHODS}，禁止使用os.{name}")
-        # 包装os.open，限制文件访问
         if name == "open":
             def restricted_open(path, flags, *args):
-                # 解析真实路径，防止路径遍历
                 real_path = self.original.path.realpath(path)
                 if real_path not in ALLOWED_FILES:
                     raise PermissionError(f"❌ 仅允许访问文件：{ALLOWED_FILES}")
-                # 仅允许读权限
                 if flags != self.O_RDONLY:
                     raise PermissionError(f"❌ 仅允许读权限（O_RDONLY），禁止其他权限")
                 return self.original.open(path, flags, *args)
             return restricted_open
-        # 其他允许的方法直接返回（但限制参数/行为）
         method = getattr(self.original, name)
         if name == "read":
             def restricted_read(fd, size):
-                # 限制读取大小（最多1KB，足够容纳flag）
                 if size > 1024:
                     size = 1024
                 return method(fd, size)
             return restricted_read
         return method
 
-    # 禁止访问__dict__、__getattribute__等反射相关属性
     def __getattribute__(self, name):
         if name in ["__dict__", "__getattribute__", "__getattr__", "__class__"]:
             raise AttributeError(f"❌ 禁止访问os反射属性：{name}")
         return super().__getattribute__(name)
 
-# ==================== 6. 模块导入拦截（仅允许白名单，os模块自动包装）====================
+# ==================== 7. 模块导入拦截====================
 class RestrictedImporter:
-    """拦截所有导入，仅允许白名单模块，os模块自动包装为SafeOs"""
     def __init__(self):
         self.original_import = __builtins__.__import__
-        self.safe_modules = {}  # 缓存安全模块
+        self.safe_modules = {}
 
     def intercept_import(self, name, globals=None, locals=None, fromlist=(), level=0):
-        # 禁止导入危险模块
         if name in DANGEROUS_MODULES:
             raise ImportError(f"❌ 禁止导入危险模块：{name}")
-        # 仅允许白名单模块
         if name not in ALLOWED_MODULES:
             raise ImportError(f"❌ 仅允许导入模块：{ALLOWED_MODULES}")
-        # 导入os模块时，自动包装为SafeOs
         if name == "os":
             original_os = self.original_import(name, globals, locals, fromlist, level)
             safe_os = SafeOs(original_os)
             self.safe_modules["os"] = safe_os
             return safe_os
-        # 导入其他白名单模块（sys已加固，importlib仅允许导入模块功能）
         if name in self.safe_modules:
             return self.safe_modules[name]
         mod = self.original_import(name, globals, locals, fromlist, level)
-        # 加固importlib，仅允许导入白名单模块
         if name == "importlib":
             original_import_module = mod.import_module
             def restricted_import_module(module_name, package=None):
@@ -241,60 +221,45 @@ class RestrictedImporter:
         self.safe_modules[name] = mod
         return mod
 
-# 替换内置__import__，拦截所有导入
 importer = RestrictedImporter()
 __builtins__.__import__ = importer.intercept_import
 
-# ==================== 7. 资源限制（防DoS）====================
+# ==================== 8. 资源限制====================
 def set_resource_limits():
-    """设置进程资源硬限制"""
     try:
-        # CPU限制：软1秒，硬2秒
         resource.setrlimit(resource.RLIMIT_CPU, (1, 2))
-        # 内存限制：软64MB，硬80MB
         resource.setrlimit(resource.RLIMIT_AS, (MAX_MEMORY, MAX_MEMORY + 16*1024*1024))
-        # 禁止创建子进程
         resource.setrlimit(resource.RLIMIT_NPROC, (1, 1))
     except (AttributeError, resource.error):
         pass
 
-# ==================== 8. 安全执行用户代码====================
+# ==================== 9. 安全执行用户代码====================
 def safe_execute(user_code):
-    """全程监控用户代码，确保仅执行合法操作"""
     old_stdout = sys.original.stdout
     old_stderr = sys.original.stderr
     captured_out = StringIO()
     captured_err = StringIO()
 
     try:
-        # 1. 检测危险代码（AST语义分析）
         check_dangerous_code(user_code)
-
-        # 2. 捕获输出，限制大小
         sys.original.stdout = captured_out
         sys.original.stderr = captured_err
 
-        # 3. 超时控制（同步执行，信号强制终止）
         import signal
         def timeout_handler(signum, frame):
             raise TimeoutError("执行超时")
         signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(int(EXEC_TIMEOUT))
 
-        # 4. 受限命名空间：仅暴露加固后的sys和importlib
         safe_globals = {
             "__name__": "__main__",
             "sys": sys,
             "importlib": importer.safe_modules.get("importlib", __import__("importlib"))
         }
 
-        # 5. 执行用户代码
         exec(user_code, safe_globals, {})
-
-        # 6. 取消超时
         signal.alarm(0)
 
-        # 7. 限制输出大小
         output = captured_out.getvalue()[:MAX_OUTPUT_SIZE].strip()
         error = captured_err.getvalue()[:MAX_OUTPUT_SIZE].strip()
         return output, error
@@ -306,34 +271,60 @@ def safe_execute(user_code):
     except Exception as e:
         return "", f"❌ 执行失败：{str(e)[:50]}"
     finally:
-        # 恢复stdout/stderr
         sys.original.stdout = old_stdout
         sys.original.stderr = old_stderr
 
-# ==================== 主程序====================
-if __name__ == "__main__":
-    print("=" * 60)
-    print("📌 PyJail Challenge：唯一绕过路径版")
-    print("⚠️  规则：仅允许通过「删除os缓存+重新导入」解题")
-    print("✅ 合法操作：del sys.modules['os'] → import os → 读取/flag.txt")
-    print("❌ 禁止：反射、危险模块、系统命令、敏感路径访问")
-    print("🎯 目标：读取 /flag.txt 并输出flag")
-    print("=" * 60)
-
-    # 初始化资源限制
-    set_resource_limits()
+# ==================== 10. GZCTF TCP服务（支持nc连接）====================
+def run_gzctf_tcp_server():
+    """适配GZCTF的TCP服务，监听8080端口"""
+    host = '0.0.0.0'
+    port = LISTEN_PORT
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    
+    try:
+        server_socket.bind((host, port))
+        server_socket.listen(10)  # 支持多用户同时连接（GZCTF比赛场景）
+        print(f"[INFO] GZCTF PyJail服务启动，监听 {host}:{port}")
+        print(f"[INFO] 合法payload：del sys.modules['os'];import os;print(os.read(os.open('/flag.txt',os.O_RDONLY),1024).decode().strip())")
+    except Exception as e:
+        print(f"[ERROR] 服务启动失败：{str(e)}")
+        sys.exit(1)
 
     while True:
+        client_socket, addr = server_socket.accept()
+        print(f"[INFO] 新连接：{addr}")
+        welcome_msg = (
+            "===== GZCTF PyJail Challenge =====\n"
+            "规则：仅允许删除os缓存+重新导入解题\n"
+            "目标：读取/flag.txt并输出flag\n"
+            "输入payload（示例：del sys.modules['os'];import os;print(os.read(os.open('/flag.txt',os.O_RDONLY),1024).decode().strip())）\n"
+            "==================================\n"
+            ">>> "
+        )
         try:
-            user_input = input(">>> ")
-            # 执行用户代码
-            output, error = safe_execute(user_input)
-            if output:
-                print(f"✅ 输出：{output}")
-            if error:
-                print(f"❌ 错误：{error}")
-        except KeyboardInterrupt:
-            print("\n👋 退出挑战")
-            sys.original.exit(0)
+            client_socket.send(welcome_msg.encode("utf-8"))
+            while True:
+                user_input = client_socket.recv(4096).decode("utf-8", errors="ignore").strip()
+                if not user_input:
+                    break
+                print(f"[INFO] 接收输入：{addr} -> {user_input[:50]}")
+                output, error = safe_execute(user_input)
+                if output:
+                    response = f"✅ 输出：{output}\n>>> ".encode("utf-8")
+                elif error:
+                    response = f"❌ 错误：{error}\n>>> ".encode("utf-8")
+                else:
+                    response = ">>> ".encode("utf-8")
+                client_socket.send(response)
         except Exception as e:
-            print(f"❌ 系统错误：{str(e)[:50]}")
+            error_msg = f"❌ 连接异常：{str(e)[:50]}\n".encode("utf-8")
+            client_socket.send(error_msg)
+        finally:
+            client_socket.close()
+            print(f"[INFO] 连接关闭：{addr}")
+
+# ==================== 主程序====================
+if __name__ == "__main__":
+    set_resource_limits()
+    run_gzctf_tcp_server()
