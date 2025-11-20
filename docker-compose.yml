@@ -1,11 +1,14 @@
 version: '3.8'
+
 services:
-  chal:
+  guess-game:
     build: .
+    image: guess-number-challenge
+    container_name: guess_number_game
     environment:
-      GZCTF_FLAG: "${GZCTF_FLAG}"
+      - GZCTF_FLAG=${GZCTF_FLAG}
     ports:
-      - "0:9999"
+      - "32872:9999"
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -16,3 +19,8 @@ services:
       - ALL
     mem_limit: 128m
     cpus: 0.5
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9999"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
