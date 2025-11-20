@@ -1,130 +1,35 @@
 #!/usr/bin/env python3
 import sys
 import io
-import ast
-import re
+import resource
 from contextlib import redirect_stdout, redirect_stderr
 
-# 打印启动信息
-print("=== Python Jail Challenge ===", file=sys.stderr)
+# 设置资源限制
+resource.setrlimit(resource.RLIMIT_CPU, (1, 1))
+resource.setrlimit(resource.RLIMIT_AS, (64 * 1024 * 1024, 64 * 1024 * 1024))
+resource.setrlimit(resource.RLIMIT_FSIZE, (1024 * 1024, 1024 * 1024))
 
-# 检查flag文件
-try:
-    with open('/flag', 'r') as f:
-        FLAG = f.read().strip()
-    print(f"Flag loaded", file=sys.stderr)
-except:
-    FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
-    print("Using default flag", file=sys.stderr)
+# 设置flag
+FLAG = "sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}"
 
-# 篡改sys.modules中的os模块
-import sys
+# 篡改os模块
 sys.modules['os'] = 'not allowed'
-sys.modules['subprocess'] = 'not allowed'
 
-# 危险的函数和属性
-DANGEROUS_BUILTINS = {
-    'eval', 'exec', 'compile', 'open', 'file',
-    'exit', 'quit', 'input', 'help', 'globals', 'locals',
-    'breakpoint', 'memoryview', 'bytes', 'bytearray'
-}
-
-DANGEROUS_ATTRIBUTES = {
-    '__class__', '__bases__', '__subclasses__', '__globals__',
-    '__code__', '__func__', '__self__', '__builtins__',
-    '__getattribute__', '__getattr__', '__setattr__', '__delattr__',
-    '__call__', '__init__', '__new__', '__module__', '__name__',
-    '__dict__', '__mro__', '__base__', '__subclasses__'
-}
-
-class SandboxError(Exception):
-    pass
-
-class SandboxVisitor(ast.NodeVisitor):
-    def __init__(self):
-        self.dangerous_calls = set()
+def safe_exec(code):
+    """安全执行用户代码"""
+    if len(code) > 200:
+        return "Code too long (max 200 chars)"
     
-    def visit_Call(self, node):
-        if isinstance(node.func, ast.Name):
-            if node.func.id in DANGEROUS_BUILTINS:
-                self.dangerous_calls.add(node.func.id)
-        elif isinstance(node.func, ast.Attribute):
-            if node.func.attr in DANGEROUS_ATTRIBUTES:
-                self.dangerous_calls.add(node.func.attr)
-        self.generic_visit(node)
+    # 只禁止最危险的函数
+    blocked = ['eval', 'exec', 'open', 'file']
+    if any(word in code.lower() for word in blocked):
+        return "Dangerous code detected!"
     
-    def visit_Import(self, node):
-        for alias in node.names:
-            if alias.name in ['os', 'subprocess', 'sys', 'importlib']:
-                raise SandboxError(f"Import of {alias.name} is not allowed directly")
-        self.generic_visit(node)
-    
-    def visit_ImportFrom(self, node):
-        if node.module in ['os', 'subprocess', 'sys', 'importlib']:
-            raise SandboxError(f"Import from {node.module} is not allowed directly")
-        self.generic_visit(node)
-
-def safe_eval(code):
-    """在受限环境中执行代码"""
-    
-    # 检查代码长度
-    if len(code) > 500:
-        return "Code too long (max 500 characters)"
-    
-    # 检查危险字符串
-    dangerous_patterns = [
-        r'open\s*\(', r'eval\s*\(', r'exec\s*\(', 
-        r'compile\s*\(', r'import\s+os', r'from\s+os', 
-        r'import\s+subprocess', r'from\s+subprocess',
-    ]
-    
-    for pattern in dangerous_patterns:
-        if re.search(pattern, code, re.IGNORECASE):
-            return "Dangerous pattern detected!"
-    
-    # AST解析和检查
-    try:
-        tree = ast.parse(code)
-    except SyntaxError as e:
-        return f"Syntax error: {e}"
-    
-    visitor = SandboxVisitor()
-    try:
-        visitor.visit(tree)
-    except SandboxError as e:
-        return f"Security check failed: {e}"
-    
-    # 限制内置函数（但保留__import__）
+    # 安全的内置函数（包含__import__允许popen）
     safe_builtins = {
-        'print': print,
-        'len': len,
-        'str': str,
-        'int': int,
-        'float': float,
-        'list': list,
-        'dict': dict,
-        'tuple': tuple,
-        'set': set,
-        'range': range,
-        'sum': sum,
-        'max': max,
-        'min': min,
-        'abs': abs,
-        'round': round,
-        'sorted': sorted,
-        'enumerate': enumerate,
-        'zip': zip,
-        'map': map,
-        'filter': filter,
-        'all': all,
-        'any': any,
-        'bool': bool,
-        'chr': chr,
-        'ord': ord,
-        'hex': hex,
-        'oct': oct,
-        'bin': bin,
-        
+        'print': print, 'len': len, 'str': str, 'int': int, 'chr': chr, 'ord': ord,
+        'list': list, 'dict': dict, 'range': range, 'sum': sum, 'max': max, 'min': min,
+        '__import__': __import__  # 允许使用__import__来调用popen
     }
     
     # 执行代码
@@ -132,84 +37,83 @@ def safe_eval(code):
     global_vars = {'__builtins__': safe_builtins}
     
     try:
-        # 为每个执行单独设置被篡改的模块
-        original_os = sys.modules.get('os')
-        original_subprocess = sys.modules.get('subprocess')
-        
-        sys.modules['os'] = 'not allowed'
-        sys.modules['subprocess'] = 'not allowed'
-        
-        # 重定向输出
         output = io.StringIO()
         with redirect_stdout(output), redirect_stderr(output):
-            exec(code, global_vars, local_vars)
-        result = output.getvalue()
-        
-        # 恢复模块
-        if original_os:
-            sys.modules['os'] = original_os
-        if original_subprocess:
-            sys.modules['subprocess'] = original_subprocess
+            # 为每次执行单独设置被篡改的模块
+            original_os = sys.modules.get('os')
+            sys.modules['os'] = 'not allowed'
             
-        if not result:
-            result = "Code executed successfully (no output)"
-        return result
+            exec(code, global_vars, local_vars)
+            
+            # 恢复模块
+            if original_os:
+                sys.modules['os'] = original_os
+                
+        result = output.getvalue()
+        return result if result else "Code executed (no output)"
         
     except Exception as e:
-        # 确保恢复模块即使在异常情况下
-        if original_os:
-            sys.modules['os'] = original_os
-        if original_subprocess:
-            sys.modules['subprocess'] = original_subprocess
-        return f"Error during execution: {e}"
+        return f"Error: {e}"
 
 def main():
     banner = """
-    🔐 Python Jail Break Challenge
-    
-    Welcome to the Python sandbox! 
-    The 'os' and 'subprocess' modules have been tampered with.
-    
-    Your goal: Execute commands to read the flag at /flag!
-    Hint: Think about how Python module importing works...
-    
-    Rules:
-    - Maximum 500 characters per input
-    - No direct imports of os, subprocess, sys, importlib
-    - But del and __import__ are allowed!
-    
-    Enter your Python code (or 'quit' to exit):
-    """
+\033[94m
+╔══════════════════════════════════════════════╗
+║                                              ║
+║    ███████╗██████╗ ██████╗  ██████╗███████╗  ║
+║    ██╔════╝██╔══██╗██╔══██╗██╔════╝██╔════╝  ║
+║    ███████╗██║  ██║██████╔╝██║     █████╗    ║
+║    ╚════██║██║  ██║██╔══██╗██║     ██╔══╝    ║
+║    ███████║██████╔╝██║  ██║╚██████╗███████╗  ║
+║    ╚══════╝╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝  ║
+║                                              ║
+║        Python Jail Break Challenge           ║
+║                                              ║
+╚══════════════════════════════════════════════╝
+\033[0m
+
+\033[92mWelcome to the SDPCSEC Python Sandbox!\033[0m
+
+The 'os' module has been tampered with and is currently blocked.
+Your mission is to bypass this restriction and execute system commands.
+
+\033[93m📖 Challenge Rules:\033[0m
+• Maximum 200 characters per input
+• No eval/exec/open functions
+• But del, import and __import__ are allowed!
+
+\033[96m💡 Hint: Think about how Python module importing works...
+        What happens when you delete a module from sys.modules?\033[0m
+
+Enter your Python code below (type 'quit' to exit):
+>>> """
     
     print(banner)
     
     while True:
         try:
-            user_input = input(">>> ").strip()
-            
-            if user_input.lower() in ['quit', 'exit', 'q']:
-                print("Goodbye!")
+            user_input = input("\033[95m>>> \033[0m").strip()
+            if user_input.lower() in ['quit', 'exit']:
+                print("\n\033[92mThank you for playing! Goodbye! 👋\033[0m")
                 break
-            
             if not user_input:
                 continue
                 
-            result = safe_eval(user_input)
-            print(result)
+            result = safe_exec(user_input)
+            print(f"\033[97m{result}\033[0m")
             
-            # 秘密检查：如果成功执行了系统命令并获取了flag
+            # 检查是否获取到flag
             if FLAG in str(result):
-                print(f"\n🎉 Congratulations! You found the flag: {FLAG}")
+                print(f"\n\033[92m🎉 CONGRATULATIONS! 🎉")
+                print(f"🏁 Flag: {FLAG}")
+                print("You successfully broke out of the Python jail! 🚀\033[0m")
                 break
                 
-        except KeyboardInterrupt:
-            print("\nGoodbye!")
-            break
-        except EOFError:
-            print("\nGoodbye!")
+        except (EOFError, KeyboardInterrupt):
+            print("\n\033[92mThank you for playing! Goodbye! 👋\033[0m")
             break
         except Exception as e:
-            print(f"Unexpected error: {e}")
+            print(f"\033[91mUnexpected error: {e}\033[0m")
 
 if __name__ == '__main__':
     main()
