@@ -1,37 +1,23 @@
 #!/bin/sh
 set -e
 
-echo "=== Starting Container ===" >&2
+echo "=== Starting Guess Number Game ===" >&2
 
-# 获取flag优先级
+# 设置flag（猜数字游戏不需要写入文件，直接从环境变量读取）
 if [ "$GZCTF_FLAG" ]; then
-    INSERT_FLAG="$GZCTF_FLAG"
-    echo "Using GZCTF_FLAG" >&2
+    echo "Using GZCTF_FLAG from environment" >&2
 elif [ "$FLAG" ]; then
-    INSERT_FLAG="$FLAG"
-    echo "Using FLAG" >&2
+    export GZCTF_FLAG="$FLAG"
+    echo "Using FLAG from environment" >&2
 else
-    # 使用正确的flag模板
-    INSERT_FLAG="sdpcsec{pyth0n_j41l_br34k3r_test}"
-    echo "Using default flag" >&2
+    export GZCTF_FLAG="sdpcsec{gu3ss_numb3r_g4m3_[TEAM_HASH]}"
+    echo "Using default flag template" >&2
 fi
 
-echo "Flag: $INSERT_FLAG" >&2
+echo "Starting Python server on port 9999..." >&2
 
-# 确保flag文件创建（使用root权限）
-echo "$INSERT_FLAG" > /flag
-chmod 644 /flag
-echo "Flag file created at /flag" >&2
+# 切换到工作目录
+cd /home/ctf
 
-# 验证flag文件
-if [ -f "/flag" ]; then
-    echo "Flag file verified: $(cat /flag)" >&2
-else
-    echo "ERROR: Flag file not created!" >&2
-    exit 1
-fi
-
-echo "Starting socat service..." >&2
-
-# socat启动python
-exec socat -s TCP-LISTEN:9999,reuseaddr,fork EXEC:"python3 -u /home/ctf/server.py"
+# 直接启动Python服务（猜数字游戏不需要socat）
+exec python server.py
