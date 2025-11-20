@@ -3,6 +3,8 @@ import sys
 import io
 import ast
 import re
+import socket
+import threading
 from contextlib import redirect_stdout, redirect_stderr
 
 # 设置flag
@@ -13,11 +15,7 @@ FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{pyth0n_j41l_br34k3r_[TEAM_HASH]}')
 with open('/flag', 'w') as f:
     f.write(FLAG)
 
-# 篡改sys.modules中的os模块
-sys.modules['os'] = 'not allowed'
-sys.modules['subprocess'] = 'not allowed'
-
-# 危险的函数和属性（移除了del和__import__的限制）
+# 危险的函数和属性
 DANGEROUS_BUILTINS = {
     'eval', 'exec', 'compile', 'open', 'file',
     'exit', 'quit', 'input', 'help', 'globals', 'locals',
@@ -121,7 +119,8 @@ def safe_eval(code, timeout=3):
     # 检查命令中是否包含源码相关关键词（但允许flag）
     source_keywords = ['server.py', '.py', 'src', 'app']
     if any(keyword in code.lower() for keyword in source_keywords):
-        return "Source code reading is not allowed!"
+        if 'flag' not in code.lower():  # 只有不包含flag时才阻止
+            return "Source code reading is not allowed!"
     
     # AST解析和检查
     try:
@@ -184,9 +183,21 @@ def safe_eval(code, timeout=3):
     except Exception as e:
         return f"Error during execution: {e}"
 
-def main():
-    banner = """
-    🔐 Python Jail Break Challenge
+def handle_client(conn, addr):
+    """处理客户端连接"""
+    print(f"New connection from {addr}")
+    
+    # 为每个客户端连接单独设置被篡改的模块
+    import sys
+    original_os = sys.modules.get('os')
+    original_subprocess = sys.modules.get('subprocess')
+    
+    sys.modules['os'] = 'not allowed'
+    sys.modules['subprocess'] = 'not allowed'
+    
+    try:
+        banner = b"""
+    \xf0\x9f\x94\x90 Python Jail Break Challenge
     
     Welcome to the Python sandbox! 
     The 'os' and 'subprocess' modules have been tampered with.
@@ -201,34 +212,61 @@ def main():
     - But del and __import__ are allowed!
     
     Enter your Python code (or 'quit' to exit):
-    """
-    
-    print(banner)
-    
-    while True:
-        try:
-            user_input = input(">>> ").strip()
-            
-            if user_input.lower() in ['quit', 'exit', 'q']:
-                print("Goodbye!")
-                break
-            
-            if not user_input:
-                continue
+    >>> """
+        conn.send(banner)
+        
+        while True:
+            try:
+                data = conn.recv(1024).decode().strip()
+                if not data:
+                    break
+                    
+                if data.lower() in ['quit', 'exit', 'q']:
+                    conn.send(b"Goodbye!\n")
+                    break
                 
-            result = safe_eval(user_input)
-            print(result)
-            
-            # 秘密检查：如果成功执行了系统命令并获取了flag
-            if FLAG in str(result):
-                print(f"\n🎉 Congratulations! You found the flag: {FLAG}")
-                break
+                result = safe_eval(data)
                 
-        except KeyboardInterrupt:
-            print("\nGoodbye!")
-            break
-        except Exception as e:
-            print(f"Unexpected error: {e}")
+                # 检查是否获取到flag
+                if FLAG in str(result):
+                    result += f"\n\n🎉 Congratulations! You found the flag: {FLAG}"
+                
+                response = f"{result}\n>>> "
+                conn.send(response.encode())
+                
+            except socket.error:
+                break
+            except Exception as e:
+                conn.send(f"Error: {e}\n>>> ".encode())
+            
+    except Exception as e:
+        print(f"Error with client {addr}: {e}")
+    finally:
+        # 恢复原始模块
+        if original_os:
+            sys.modules['os'] = original_os
+        if original_subprocess:
+            sys.modules['subprocess'] = original_subprocess
+        conn.close()
+        print(f"Connection from {addr} closed")
+
+def start_server(host='0.0.0.0', port=9999):
+    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind((host, port))
+    server.listen(5)
+    print(f"Server listening on {host}:{port}")
+    
+    try:
+        while True:
+            conn, addr = server.accept()
+            client_thread = threading.Thread(target=handle_client, args=(conn, addr))
+            client_thread.daemon = True
+            client_thread.start()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+    finally:
+        server.close()
 
 if __name__ == '__main__':
-    main()
+    start_server()
