@@ -1,15 +1,25 @@
 FROM python:3.9-slim
 
-RUN apt-get update && apt-get install -y socat
-RUN pip install pycryptodome sympy
+WORKDIR /app
 
-RUN useradd -m ctf
-WORKDIR /home/ctf
+# 创建目录结构
+RUN mkdir -p /app/src /app/service
 
-COPY ./src/server.py /home/ctf/server.py
-COPY ./service/docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+# 复制源代码
+COPY src/server.py /app/src/
+COPY service/docker-entrypoint.sh /app/service/
+
+# 设置权限
+RUN chmod +x /app/service/docker-entrypoint.sh
+RUN chmod +x /app/src/server.py
+
+# 创建非root用户
+RUN useradd -m -u 1000 ctf && \
+    chown -R ctf:ctf /app
 
 USER ctf
 
-ENTRYPOINT ["/bin/sh","/docker-entrypoint.sh"]
+EXPOSE 9999
+
+# 使用entrypoint脚本
+ENTRYPOINT ["/app/service/docker-entrypoint.sh"]
