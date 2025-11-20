@@ -1,4 +1,5 @@
 #!/bin/sh
+set -e
 
 # 获取flag优先级
 if [ "$GZCTF_FLAG" ]; then
@@ -10,9 +11,9 @@ else
     INSERT_FLAG="flag{TEST_Dynamic_FLAG}"
 fi
 
-# 写入 /flag
+# 写入 /flag (使用root权限)
 echo $INSERT_FLAG > /flag
-chmod 600 /flag
+chmod 644 /flag
 
-# socat启动python
-socat -s TCP-LISTEN:9999,reuseaddr,fork EXEC:"python3 -u /home/ctf/server.py"
+# 切换到ctf用户并启动
+exec su -c "socat -s TCP-LISTEN:9999,reuseaddr,fork EXEC:'python3 -u /home/ctf/server.py'" ctf
