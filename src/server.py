@@ -1,126 +1,96 @@
-#!/usr/bin/env python3
-import random
-import os
-import socket
+import socketserver
 import threading
 import sys
+import os
+import signal
+from Crypto.Util.number import getPrime, bytes_to_long, long_to_bytes
 
-# 从环境变量获取flag
-FLAG = os.environ.get('GZCTF_FLAG', 'sdpcsec{gu3ss_numb3r_g4m3_[TEAM_HASH]}')
+# 配置
+HOST = '0.0.0.0'
+PORT = 9999
 
-class GuessGame:
+# 从环境变量读取 FLAG，如果不存在则使用默认测试 Flag
+# GZCTF 会在容器启动时将动态 Flag 注入到 GZCTF_FLAG 变量中
+FLAG = os.getenv("GZCTF_FLAG", "sdpcsec{b_box_isez_f0r_y0u_[TEAM_HASH]}")
+
+class Challenge:
     def __init__(self):
-        self.target_number = random.randint(1, 1000000)
-        self.attempts_left = 20  # 改为20次
-        self.game_over = False
+        print(f"[Init] Generating 512-bit RSA keys for Flag: {FLAG}")
+        # 生成两个 256 位的素数，N 为 512 位
+        # 512位对于现代工具(YAFU/CADO-NFS)是可分解的，符合题目难度定位
+        self.p = getPrime(256)
+        self.q = getPrime(256)
+        self.N = self.p * self.q
+        self.e = 65537 
         
-    def guess(self, number):
-        """猜数字，有10%概率给出错误的大小反馈"""
-        if self.game_over:
-            return "Game over! Please start a new game."
-            
-        if self.attempts_left <= 0:
-            self.game_over = True
-            return "No attempts left! Game over!"
-        
+        # 加密 Flag (即题目中的 intercepted message y)
+        m = bytes_to_long(FLAG.encode())
+        self.encrypted_flag = pow(m, self.e, self.N)
+
+    def encrypt(self, plaintext_int):
+        """
+        Oracle 函数：Encr(x) = x^e mod n
+        """
+        if plaintext_int < 0:
+            return None
+        return pow(plaintext_int, self.e, self.N)
+
+# 全局初始化挑战环境 (确保所有连接使用的是同一个 N 和 Flag)
+chall = Challenge()
+
+class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        # 设置超时，防止恶意占用连接
+        self.request.settimeout(60)
         try:
-            guess_num = int(number)
-        except ValueError:
-            return "Please enter a valid number!"
-        
-        if guess_num < 1 or guess_num > 1000000:
-            return "Number must be between 1 and 1000000!"
-        
-        self.attempts_left -= 1
-        
-        # 10%概率给出错误的大小反馈
-        give_wrong_feedback = random.random() < 0.1
-        
-        if guess_num == self.target_number:
-            self.game_over = True
-            return f"🎉 Congratulations! You guessed it! The number was {self.target_number}.\nHere's your flag: {FLAG}"
-        
-        # 正常逻辑：猜小了显示"Too small!"，猜大了显示"Too big!"
-        if guess_num < self.target_number:
-            correct_feedback = "Too small!"
-        else:
-            correct_feedback = "Too big!"
-        
-        # 10%概率反转大小反馈（但用户不知道这是错误的）
-        if give_wrong_feedback:
-            if "small" in correct_feedback:
-                feedback = "Too big!"  # 实际上猜小了，但显示猜大了
-            else:
-                feedback = "Too small!"  # 实际上猜大了，但显示猜小了
-        else:
-            feedback = correct_feedback  # 显示正确的反馈
-        
-        if self.attempts_left == 0:
-            self.game_over = True
-            return f"{feedback}\nNo attempts left! The number was {self.target_number}. Game over!"
-        
-        return f"{feedback} Attempts left: {self.attempts_left}"
+            # 1. 发送欢迎信息和加密后的 Flag
+            welcome_msg = (
+                f"Welcome to the Hidden RSA Oracle!\n"
+                f"I hold a secret modulus N and exponent e.\n"
+                f"Here is the intercepted secret message (y): {chall.encrypted_flag}\n"
+                f"You can encrypt any integer x using my system: Encr(x) = x^e mod N.\n"
+                f"Please input x (integer):\n"
+            )
+            self.request.sendall(welcome_msg.encode('utf-8'))
 
-def handle_client(conn, addr):
-    """处理客户端连接"""
-    game = GuessGame()
-    
-    banner = f"""
-🎯 Number Guessing Challenge 🎯
-
-I'm thinking of a number between 1 and 1,000,000.
-You have {game.attempts_left} attempts to guess it.
-
-Enter your guess (1-1000000) or 'quit' to exit:
-"""
-    
-    try:
-        conn.sendall(banner.encode())
-        
-        while not game.game_over and game.attempts_left > 0:
-            conn.sendall(b"\nGuess: ")
-            data = conn.recv(1024).decode().strip()
-            
-            if not data:
-                break
+            # 2. 交互循环
+            while True:
+                self.request.sendall(b"> ")
+                data = self.request.recv(1024).strip()
+                if not data:
+                    break
                 
-            if data.lower() in ['quit', 'exit', 'q']:
-                conn.sendall(f"Game ended. The number was {game.target_number}\n".encode())
-                break
-            
-            result = game.guess(data)
-            conn.sendall(f"{result}\n".encode())
-            
-    except Exception as e:
-        conn.sendall(f"Error: {e}\n".encode())
-    finally:
-        conn.close()
+                try:
+                    x = int(data.decode())
+                    # 限制输入大小，防止 DoS
+                    if x.bit_length() > 2048: 
+                        self.request.sendall(b"Input too large.\n")
+                        continue
+                    
+                    # 执行 Oracle 加密
+                    c = chall.encrypt(x)
+                    response = f"{c}\n"
+                    self.request.sendall(response.encode('utf-8'))
+                    
+                except ValueError:
+                    self.request.sendall(b"Invalid input. Please enter an integer.\n")
+        except Exception as e:
+            # 连接断开或超时
+            pass
 
-def main():
-    """主函数 - 启动socket服务"""
-    host = '0.0.0.0'
-    port = 9999
-    
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    
-    try:
-        server.bind((host, port))
-        server.listen(5)
-        print(f"Guess Game Server started on {host}:{port}", file=sys.stderr)
-        print(f"Waiting for connections...", file=sys.stderr)
-        
-        while True:
-            conn, addr = server.accept()
-            print(f"Connection from {addr}", file=sys.stderr)
-            client_thread = threading.Thread(target=handle_client, args=(conn, addr))
-            client_thread.daemon = True
-            client_thread.start()
-            
-    except Exception as e:
-        print(f"Server error: {e}", file=sys.stderr)
-    finally:
-        server.close()
+class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
+    allow_reuse_address = True
 
-if __name__ == '__main__':
-    main()
+def signal_handler(sig, frame):
+    print("\n[!] Server stopping...")
+    sys.exit(0)
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+    server = ThreadedTCPServer((HOST, PORT), ThreadedTCPRequestHandler)
+    print(f"[+] Starting Hidden RSA Oracle on {HOST}:{PORT}")
+    print(f"[+] Secret N (Log for Admin): {chall.N}")
+    
+    server.serve_forever()
