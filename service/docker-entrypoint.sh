@@ -10,7 +10,7 @@ elif [ "$FLAG" ]; then
     export GZCTF_FLAG="$FLAG"
     echo "Using FLAG from environment" >&2
 else
-    export GZCTF_FLAG="sdpcsec{gu3ss_numb3r_g4m3_[TEAM_HASH]}"
+    export GZCTF_FLAG="sdpcsec{b_box_isez_f0r_y0u_[TEAM_HASH]}"
     echo "Using default flag template" >&2
 fi
 
