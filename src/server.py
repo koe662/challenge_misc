@@ -24,9 +24,9 @@ class Challenge:
         # 计算 phi 以确保 e 与 phi 互素（保证 RSA 合法性）
         phi = (self.p - 1) * (self.q - 1)
         
-        # 修改点 1: e 为 < 100000 的随机数
+        # 修改点 1: e 为 < 10000 的随机数
         while True:
-            self.e = random.randint(3, 99999)
+            self.e = random.randint(3, 9999)
             if GCD(self.e, phi) == 1:
                 break
         
@@ -53,7 +53,7 @@ class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
             # 修改点 3: 欢迎信息中移除密文 y 的输出
             welcome_msg = (
                 f"Welcome to the Hidden RSA Oracle!\n"
-                f"I hold a secret modulus N (512-bit) and a random exponent e (e < 100000).\n"
+                f"I hold a secret modulus N (512-bit) and a random exponent e (e < 10000).\n"
                 f"I will NOT give you the encrypted flag.\n"
                 f"You have exactly 2 chances to query the Oracle: Encr(x) = x^e mod N.\n"
                 f"After 2 queries, you must tell me what N is to get the flag.\n"
