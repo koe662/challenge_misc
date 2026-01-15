@@ -1,102 +1,164 @@
-import socketserver
-import sys
+#!/usr/bin/env python3
 import os
+import sys
+import socketserver
 import signal
+import binascii
 import random
-from Crypto.Util.number import getPrime
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad
 
-# 配置
-HOST = '0.0.0.0'
-PORT = 9999
-FLAG = os.getenv("GZCTF_FLAG", "sdpcsec{b_box_isez_f0r_y0u_[TEAM_HASH]}")
+# ================= CONFIGURATION =================
+# 获取 Flag，如果本地测试没有环境变量则使用默认值
+FLAG = os.environ.get("GZCTF_FLAG", "flag{test_flag_for_local_debug}")
+TIMEOUT = 60  # 连接超时时间 (秒)
+PORT = 9999   # 监听端口
+# =================================================
 
 class Challenge:
     def __init__(self):
-        # 1. 生成模数 N
-        self.p = getPrime(256)
-        self.q = getPrime(256)
-        self.N = self.p * self.q
+        # 每次连接生成随机密钥，隔离不同选手的会话，防止重放
+        self.key = os.urandom(16)
         
-        # 2. 生成 e (3 ~ 10000)
-        # 按照要求：不需要检查 gcd(e, phi) == 1
-        # 这意味着 e 甚至可以是偶数，或者 phi 的因子，这对 "求N" 的逻辑没有影响
-        self.e = random.randint(3, 10000)
+    def f(self, val_bytes):
+        """内部压缩函数 f: 模拟题目中的随机函数 (使用 AES-ECB)"""
+        if len(val_bytes) != 16:
+            raise ValueError("Input length must be 16 bytes")
+        cipher = AES.new(self.key, AES.MODE_ECB)
+        return cipher.encrypt(val_bytes)
 
-    def encrypt(self, plaintext_int):
-        """
-        Oracle: x^e mod N
-        """
-        return pow(plaintext_int, self.e, self.N)
+    def xor_bytes(self, a, b):
+        return bytes(x ^ y for x, y in zip(a, b))
 
-class ThreadedTCPRequestHandler(socketserver.BaseRequestHandler):
+    def H(self, message):
+        """迭代哈希函数 H"""
+        state = b'\x00' * 16
+        
+        # 自动填充到 16 字节倍数 (Zero Padding)
+        # 题目逻辑：如果不满16字节，补0。
+        if len(message) % 16 != 0:
+            padding_len = 16 - (len(message) % 16)
+            message += b'\x00' * padding_len
+            
+        blocks = [message[i:i+16] for i in range(0, len(message), 16)]
+        
+        for block in blocks:
+            # 核心公式: h_i = m_i ^ f(h_{i-1} ^ m_i)
+            inner = self.xor_bytes(state, block)
+            f_out = self.f(inner)
+            state = self.xor_bytes(block, f_out)
+            
+        return state
+
+class TaskHandler(socketserver.BaseRequestHandler):
     def handle(self):
-        self.request.settimeout(120)
         try:
-            # 每次连接都实例化一个新的 Challenge，保证 N 和 e 是全新的
-            current_chall = Challenge()
+            # 设置超时，防止挂起连接
+            signal.alarm(TIMEOUT)
             
-            # 欢迎信息 (不输出 y)
-            welcome_msg = (
-                f"Welcome to the RSA Modulus Challenge!\n"
-                f"Settings: e is random (< 10000), and checks on GCD(e, phi) are REMOVED.\n"
-                f"You have 2 chances to query: x -> x^e mod N\n"
-                f"Then you must reveal N.\n"
-                f"--------------------------------------------------\n"
-            )
-            self.request.sendall(welcome_msg.encode('utf-8'))
-
-            # 2 次查询机会
-            for i in range(2):
-                try:
-                    self.request.sendall(f"[{i+1}/2] Input x: ".encode('utf-8'))
-                    data = self.request.recv(1024).strip()
-                    if not data: return
-                    
-                    x = int(data.decode())
-                    
-                    # 限制输入大小
-                    if x.bit_length() > 2048:
-                        self.request.sendall(b"Input too large.\n")
-                        return
-                    
-                    # 计算并返回结果
-                    c = current_chall.encrypt(x)
-                    self.request.sendall(f"Result: {c}\n".encode('utf-8'))
-                    
-                except ValueError:
-                    self.request.sendall(b"Invalid integer.\n")
-                    return
-
-            # 验证环节
-            self.request.sendall(b"\nQueries used up. Tell me N: ")
+            # 初始化挑战环境
+            chall = Challenge()
+            
+            # ==========================================
+            # 1. 生成随机目标消息 m
+            # ==========================================
+            random_id = binascii.hexlify(os.urandom(4)).decode()
+            target_msg_str = f"System: Access Granted [ID:{random_id}]"
+            target_msg = target_msg_str.encode()
+            
+            # 计算目标哈希
+            target_hash = chall.H(target_msg)
+            
+            # ==========================================
+            # 2. 生成泄露数据对 (x, f(x))
+            # 选手需要利用这一对数据构造追加攻击
+            # ==========================================
+            leak_x = os.urandom(16)
+            leak_fx = chall.f(leak_x)
+            
+            # ==========================================
+            # 3. 发送题目信息
+            # ==========================================
+            self.send_line("=" * 60)
+            self.send_line("       [ Hash Second Preimage Challenge ]")
+            self.send_line("=" * 60)
+            self.send_line(f"Please find a second preimage (collision) for the target message.")
+            self.send_line(f"You have {TIMEOUT} seconds.\n")
+            
+            # 输出 M
+            self.send_line(f"[+] Target Message (Hex): {target_msg.hex()}")
+            self.send_line(f"[+] Target Hash    (Hex): {target_hash.hex()}")
+            self.send_line("-" * 50)
+            
+            # 输出 (x, f(x))
+            self.send_line(f"[+] Leaked Internal Pair (x, f(x)):")
+            self.send_line(f"    x    : {leak_x.hex()}")
+            self.send_line(f"    f(x) : {leak_fx.hex()}")
+            self.send_line("-" * 50)
+            
+            # ==========================================
+            # 4. 等待用户输入
+            # ==========================================
+            self.send_line("[-] Input your forged message (Hex): ")
             data = self.request.recv(4096).strip()
-            if not data: return
             
-            try:
-                user_n = int(data.decode())
-                # 判定
-                if user_n == current_chall.N:
-                    self.request.sendall(f"\nCorrect! Flag: {FLAG}\n".encode('utf-8'))
-                else:
-                    self.request.sendall(b"\nWrong N! Bye.\n")
-            except ValueError:
-                pass
+            if not data:
+                return
 
-        except Exception:
+            try:
+                user_msg = binascii.unhexlify(data)
+            except binascii.Error:
+                self.send_line("[!] Error: Invalid Hex encoding.")
+                return
+
+            # ==========================================
+            # 5. 验证逻辑
+            # ==========================================
+            
+            # 验证 1: 不能提交原始消息
+            if user_msg == target_msg:
+                self.send_line("[!] Error: You cannot submit the original message.")
+                return
+            
+            # 验证 2: 长度检查 (防止空消息等)
+            if len(user_msg) == 0:
+                self.send_line("[!] Error: Empty message.")
+                return
+
+            # 计算用户提交消息的哈希
+            user_hash = chall.H(user_msg)
+            
+            # 验证 3: 哈希碰撞检查
+            if user_hash == target_hash:
+                self.send_line(f"\n[+] Success! Collision found.")
+                self.send_line(f"[+] Here is your flag: {FLAG}")
+            else:
+                self.send_line(f"\n[!] Fail. Hash mismatch.")
+                self.send_line(f"    Your Hash: {user_hash.hex()}")
+                self.send_line(f"    Target   : {target_hash.hex()}")
+                
+        except Exception as e:
+            self.send_line(f"[!] Server Error: {e}")
+        finally:
+            self.request.close()
+
+    def send_line(self, text):
+        """辅助函数：发送一行文本并换行"""
+        try:
+            self.request.sendall((text + "\n").encode())
+        except:
             pass
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
-
-def signal_handler(sig, frame):
-    print("\n[!] Server stopping...")
-    sys.exit(0)
+    pass
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    server = ThreadedTCPServer((HOST, PORT), ThreadedTCPRequestHandler)
-    print(f"[+] Starting Challenge on port {PORT}")
-    print(f"[+] Constraints: e < 10000, No Coprime Check")
-    server.serve_forever()
+    # 允许端口复用，防止重启容器时端口被占用
+    socketserver.TCPServer.allow_reuse_address = True
+    server = ThreadedTCPServer(("0.0.0.0", PORT), TaskHandler)
+    print(f"[*] Server listening on 0.0.0.0:{PORT}...")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("[*] Server shutting down.")
+        server.shutdown()
