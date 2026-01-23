@@ -2,26 +2,26 @@
 import os
 import sys
 import socketserver
-import signal
 import binascii
-import random
+import json
 from Crypto.Cipher import AES
-from Crypto.Util.Padding import pad
 
 # ================= CONFIGURATION =================
-# 获取 Flag，如果本地测试没有环境变量则使用默认值
-FLAG = os.environ.get("GZCTF_FLAG", "flag{test_flag_for_local_debug}")
-TIMEOUT = 60  # 连接超时时间 (秒)
-PORT = 9999   # 监听端口
+FLAG = os.environ.get("GZCTF_FLAG", "flag{Matr1x_M4ster_Beat5_App3nd_Att4ck}")
+# 块大小 128 bits (16 bytes)
+BLOCK_SIZE = 16
+# 限制最大块数量 (Target Message Length)
+# 矩阵攻击通常需要约 128 个块来生成任意哈希
+MAX_BLOCKS = 135 
+# 提供足够多的已知对，确保满秩 (256 > 128)
+PAIRS_COUNT = 300 
 # =================================================
 
 class Challenge:
     def __init__(self):
-        # 每次连接生成随机密钥，隔离不同选手的会话，防止重放
         self.key = os.urandom(16)
         
     def f(self, val_bytes):
-        """内部压缩函数 f: 模拟题目中的随机函数 (使用 AES-ECB)"""
         if len(val_bytes) != 16:
             raise ValueError("Input length must be 16 bytes")
         cipher = AES.new(self.key, AES.MODE_ECB)
@@ -31,19 +31,15 @@ class Challenge:
         return bytes(x ^ y for x, y in zip(a, b))
 
     def H(self, message):
-        """迭代哈希函数 H"""
         state = b'\x00' * 16
-        
-        # 自动填充到 16 字节倍数 (Zero Padding)
-        # 题目逻辑：如果不满16字节，补0。
+        # Zero Padding
         if len(message) % 16 != 0:
-            padding_len = 16 - (len(message) % 16)
-            message += b'\x00' * padding_len
+            message += b'\x00' * (16 - (len(message) % 16))
             
         blocks = [message[i:i+16] for i in range(0, len(message), 16)]
         
         for block in blocks:
-            # 核心公式: h_i = m_i ^ f(h_{i-1} ^ m_i)
+            # h_i = m_i ^ f(h_{i-1} ^ m_i)
             inner = self.xor_bytes(state, block)
             f_out = self.f(inner)
             state = self.xor_bytes(block, f_out)
@@ -53,112 +49,76 @@ class Challenge:
 class TaskHandler(socketserver.BaseRequestHandler):
     def handle(self):
         try:
-            # 设置超时，防止挂起连接
-            signal.alarm(TIMEOUT)
-            
-            # 初始化挑战环境
             chall = Challenge()
             
-            # ==========================================
-            # 1. 生成随机目标消息 m
-            # ==========================================
-            random_id = binascii.hexlify(os.urandom(4)).decode()
-            target_msg_str = f"System: Access Granted [ID:{random_id}]"
-            target_msg = target_msg_str.encode()
-            
-            # 计算目标哈希
+            # 1. 生成一个较长的随机目标消息 (接近 MAX_BLOCKS)
+            # 这样 Append Attack 必然超长
+            target_blocks = MAX_BLOCKS
+            target_msg = os.urandom(target_blocks * BLOCK_SIZE)
             target_hash = chall.H(target_msg)
             
-            # ==========================================
-            # 2. 生成泄露数据对 (x, f(x))
-            # 选手需要利用这一对数据构造追加攻击
-            # ==========================================
-            leak_x = os.urandom(16)
-            leak_fx = chall.f(leak_x)
+            # 2. 生成大量泄露数据 (供矩阵求解)
+            known_pairs = []
+            seen_x = set()
+            while len(known_pairs) < PAIRS_COUNT:
+                x = os.urandom(16)
+                if x in seen_x: continue
+                seen_x.add(x)
+                known_pairs.append({"x": x.hex(), "fx": chall.f(x).hex()})
             
-            # ==========================================
-            # 3. 发送题目信息
-            # ==========================================
-            self.send_line("=" * 60)
-            self.send_line("       [ Hash Second Preimage Challenge ]")
-            self.send_line("=" * 60)
-            self.send_line(f"Please find a second preimage (collision) for the target message.")
-            self.send_line(f"You have {TIMEOUT} seconds.\n")
-            
-            # 输出 M
-            self.send_line(f"[+] Target Message (Hex): {target_msg.hex()}")
-            self.send_line(f"[+] Target Hash    (Hex): {target_hash.hex()}")
+            # 3. 交互
+            self.send_line("=== Hash Collision: Hard Mode (Length Restricted) ===")
+            self.send_line(f"Find a second preimage with LENGTH <= {MAX_BLOCKS * BLOCK_SIZE} bytes.")
+            self.send_line("Hint: The simple append strategy will make the message too long!")
             self.send_line("-" * 50)
             
-            # 输出 (x, f(x))
-            self.send_line(f"[+] Leaked Internal Pair (x, f(x)):")
-            self.send_line(f"    x    : {leak_x.hex()}")
-            self.send_line(f"    f(x) : {leak_fx.hex()}")
+            self.send_line(f"[+] Target Hash (Hex): {target_hash.hex()}")
+            # 注意：这里不需要发 Target Message 的原文，
+            # 因为矩阵攻击根本不需要原文，只需要 Hash 值。
+            # 如果你发了原文，append 攻击者会发现追加后长度变长了。
+            
+            self.send_line(f"[+] Leaked Pairs ({len(known_pairs)}):")
+            self.send_line(json.dumps(known_pairs))
             self.send_line("-" * 50)
             
-            # ==========================================
-            # 4. 等待用户输入
-            # ==========================================
             self.send_line("[-] Input your forged message (Hex): ")
-            data = self.request.recv(4096).strip()
+            data = self.request.recv(65536).strip()
             
-            if not data:
-                return
-
             try:
                 user_msg = binascii.unhexlify(data)
-            except binascii.Error:
-                self.send_line("[!] Error: Invalid Hex encoding.")
+            except:
+                self.send_line("[!] Invalid Hex.")
                 return
 
-            # ==========================================
-            # 5. 验证逻辑
-            # ==========================================
-            
-            # 验证 1: 不能提交原始消息
-            if user_msg == target_msg:
-                self.send_line("[!] Error: You cannot submit the original message.")
-                return
-            
-            # 验证 2: 长度检查 (防止空消息等)
-            if len(user_msg) == 0:
-                self.send_line("[!] Error: Empty message.")
+            # === 核心限制：长度检查 ===
+            # Append Attack 构造的消息长度是 len(target) + 32
+            # 我们这里限制必须 <= len(target)
+            if len(user_msg) > target_blocks * BLOCK_SIZE:
+                self.send_line(f"[!] Fail: Message too long! Max {target_blocks} blocks.")
+                self.send_line(f"    Your length: {len(user_msg)//16} blocks.")
                 return
 
-            # 计算用户提交消息的哈希
+            # 验证哈希
             user_hash = chall.H(user_msg)
-            
-            # 验证 3: 哈希碰撞检查
             if user_hash == target_hash:
-                self.send_line(f"\n[+] Success! Collision found.")
-                self.send_line(f"[+] Here is your flag: {FLAG}")
+                self.send_line(f"[+] Flag: {FLAG}")
             else:
-                self.send_line(f"\n[!] Fail. Hash mismatch.")
-                self.send_line(f"    Your Hash: {user_hash.hex()}")
-                self.send_line(f"    Target   : {target_hash.hex()}")
+                self.send_line(f"[!] Fail. Hash mismatch.")
                 
         except Exception as e:
-            self.send_line(f"[!] Server Error: {e}")
+            self.send_line(f"[!] Error: {e}")
         finally:
             self.request.close()
 
     def send_line(self, text):
-        """辅助函数：发送一行文本并换行"""
         try:
             self.request.sendall((text + "\n").encode())
-        except:
-            pass
+        except: pass
 
 class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     pass
 
 if __name__ == "__main__":
-    # 允许端口复用，防止重启容器时端口被占用
     socketserver.TCPServer.allow_reuse_address = True
-    server = ThreadedTCPServer(("0.0.0.0", PORT), TaskHandler)
-    print(f"[*] Server listening on 0.0.0.0:{PORT}...")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("[*] Server shutting down.")
-        server.shutdown()
+    server = ThreadedTCPServer(("0.0.0.0", 9999), TaskHandler)
+    server.serve_forever()
