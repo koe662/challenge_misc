@@ -3,89 +3,56 @@ import os
 import random
 import sys
 
-# 禁用缓冲，确保输出实时传输
 sys.stdout.reconfigure(line_buffering=True)
 
-# PHIGFS 矩阵 A''
-A_PRIME_PRIME = [
-    [0, 1, 1, 1],
-    [1, 1, 1, 0],
-    [1, 1, 0, 1],
-    [1, 0, 1, 1]
-]
-
-# 随机生成一个 S-box (8-bit)
 SBOX = list(range(256))
+random.seed(2022)
 random.shuffle(SBOX)
 
-def matrix_mul(A, vec):
-    res = [0, 0, 0, 0]
+def matrix_op(v):
+    m = [[0,1,1,1],[1,1,1,0],[1,1,0,1],[1,0,1,1]]
+    res = [0]*4
     for i in range(4):
         for j in range(4):
-            if A[i][j]:
-                res[i] ^= vec[j]
+            if m[i][j]: res[i] ^= v[j]
     return res
 
-def encrypt_phigfs(state, round_keys, rounds=8):
-    """实现 PHIGFS 加密逻辑 [cite: 22]"""
-    curr_state = list(state)
-    for r in range(rounds):
-        x3, x2, x1, x0 = curr_state
-        k1, k0 = round_keys[r]
-        # 非线性层
-        y2 = x2 ^ SBOX[x3 ^ k1]
-        y0 = x0 ^ SBOX[x1 ^ k0]
-        # 矩阵变换层
-        curr_state = matrix_mul(A_PRIME_PRIME, [x3, y2, x1, y0])
-    return tuple(curr_state)
-
-def get_random_state():
-    return tuple(random.getrandbits(8) for _ in range(4))
+def phigfs_enc(p, ks):
+    state = list(p)
+    for r in range(8):
+        x3, x2, x1, x0 = state
+        y2 = x2 ^ SBOX[x3 ^ ks[r][0]]
+        y0 = x0 ^ SBOX[x1 ^ ks[r][1]]
+        state = matrix_op([x3, y2, x1, y0])
+    return bytes(state)
 
 def main():
-    FLAG = os.getenv("FLAG", "flag{phigfs_linear_layer_is_too_weak_12345}")
-    ROUNDS_TO_WIN = 50
+    flag = os.getenv("FLAG", "flag{test_dummy}")
+    print("Mode: [R]EAL PHIGFS or [F]AKE Random Permutation")
     
-    print("=== PHIGFS Distinguisher Challenge ===")
-    print("Philip thinks his new cipher is secure. Prove him wrong!")
-    print(f"Correctly distinguish PHIGFS from a Random Permutation {ROUNDS_TO_WIN} times to get the Flag.")
-    print("Each block is 4 bytes: (x3, x2, x1, x0). Input/Output in hex.\n")
-
-    for i in range(ROUNDS_TO_WIN):
-        print(f"--- Round {i+1}/{ROUNDS_TO_WIN} ---")
+    for _ in range(50):
         is_real = random.getrandbits(1)
+        ks = [(random.getrandbits(8), random.getrandbits(8)) for _ in range(8)]
         
-        # 为本轮生成随机密钥
-        round_keys = [(random.getrandbits(8), random.getrandbits(8)) for _ in range(8)]
-        
-        # 允许用户询问有限次数的加密
-        print("You can query 2 pairs of plaintexts.")
-        for q in range(2):
+        for _ in range(2):
             try:
-                line = input(f"Query {q+1} (hex string, e.g., 00112233): ").strip()
-                p_bytes = bytes.fromhex(line)
-                if len(p_bytes) != 4: raise ValueError
-                
-                p = tuple(p_bytes)
+                inp = bytes.fromhex(input("> ").strip())
+                if len(inp) != 4: break
                 if is_real:
-                    c = encrypt_phigfs(p, round_keys)
+                    print(phigfs_enc(inp, ks).hex())
                 else:
-                    # 模拟随机置换（简化版）
-                    c = tuple(random.getrandbits(8) for _ in range(4))
-                
-                print(f"Result: {bytes(c).hex()}")
+                    print(os.urandom(4).hex())
             except:
-                print("Invalid input. Game over.")
                 return
 
-        choice = input("Is this [R]EAL PHIGFS or [F]AKE random? (R/F): ").strip().upper()
-        if (choice == 'R' and is_real) or (choice == 'F' and not is_real):
-            print("Correct!\n")
+        ans = input("? ").strip().upper()
+        if (ans == 'R' and is_real) or (ans == 'F' and not is_real):
+            print("OK")
         else:
-            print("Wrong! Philip laughs at you.")
+            print("FAIL")
             return
-
-    print(f"Congratulations! Here is your Flag: {FLAG}")
+            
+    print(flag)
 
 if __name__ == "__main__":
     main()
