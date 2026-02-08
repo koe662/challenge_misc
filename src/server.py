@@ -1,124 +1,91 @@
 #!/usr/bin/env python3
 import os
+import random
 import sys
-import socketserver
-import binascii
-import json
-from Crypto.Cipher import AES
 
-# ================= CONFIGURATION =================
-FLAG = os.environ.get("GZCTF_FLAG", "flag{Matr1x_M4ster_Beat5_App3nd_Att4ck}")
-# 块大小 128 bits (16 bytes)
-BLOCK_SIZE = 16
-# 限制最大块数量 (Target Message Length)
-# 矩阵攻击通常需要约 128 个块来生成任意哈希
-MAX_BLOCKS = 135 
-# 提供足够多的已知对，确保满秩 (256 > 128)
-PAIRS_COUNT = 300 
-# =================================================
+# 禁用缓冲，确保输出实时传输
+sys.stdout.reconfigure(line_buffering=True)
 
-class Challenge:
-    def __init__(self):
-        self.key = os.urandom(16)
+# PHIGFS 矩阵 A''
+A_PRIME_PRIME = [
+    [0, 1, 1, 1],
+    [1, 1, 1, 0],
+    [1, 1, 0, 1],
+    [1, 0, 1, 1]
+]
+
+# 随机生成一个 S-box (8-bit)
+SBOX = list(range(256))
+random.shuffle(SBOX)
+
+def matrix_mul(A, vec):
+    res = [0, 0, 0, 0]
+    for i in range(4):
+        for j in range(4):
+            if A[i][j]:
+                res[i] ^= vec[j]
+    return res
+
+def encrypt_phigfs(state, round_keys, rounds=8):
+    """实现 PHIGFS 加密逻辑 [cite: 22]"""
+    curr_state = list(state)
+    for r in range(rounds):
+        x3, x2, x1, x0 = curr_state
+        k1, k0 = round_keys[r]
+        # 非线性层
+        y2 = x2 ^ SBOX[x3 ^ k1]
+        y0 = x0 ^ SBOX[x1 ^ k0]
+        # 矩阵变换层
+        curr_state = matrix_mul(A_PRIME_PRIME, [x3, y2, x1, y0])
+    return tuple(curr_state)
+
+def get_random_state():
+    return tuple(random.getrandbits(8) for _ in range(4))
+
+def main():
+    FLAG = os.getenv("FLAG", "flag{phigfs_linear_layer_is_too_weak_12345}")
+    ROUNDS_TO_WIN = 50
+    
+    print("=== PHIGFS Distinguisher Challenge ===")
+    print("Philip thinks his new cipher is secure. Prove him wrong!")
+    print(f"Correctly distinguish PHIGFS from a Random Permutation {ROUNDS_TO_WIN} times to get the Flag.")
+    print("Each block is 4 bytes: (x3, x2, x1, x0). Input/Output in hex.\n")
+
+    for i in range(ROUNDS_TO_WIN):
+        print(f"--- Round {i+1}/{ROUNDS_TO_WIN} ---")
+        is_real = random.getrandbits(1)
         
-    def f(self, val_bytes):
-        if len(val_bytes) != 16:
-            raise ValueError("Input length must be 16 bytes")
-        cipher = AES.new(self.key, AES.MODE_ECB)
-        return cipher.encrypt(val_bytes)
-
-    def xor_bytes(self, a, b):
-        return bytes(x ^ y for x, y in zip(a, b))
-
-    def H(self, message):
-        state = b'\x00' * 16
-        # Zero Padding
-        if len(message) % 16 != 0:
-            message += b'\x00' * (16 - (len(message) % 16))
-            
-        blocks = [message[i:i+16] for i in range(0, len(message), 16)]
+        # 为本轮生成随机密钥
+        round_keys = [(random.getrandbits(8), random.getrandbits(8)) for _ in range(8)]
         
-        for block in blocks:
-            # h_i = m_i ^ f(h_{i-1} ^ m_i)
-            inner = self.xor_bytes(state, block)
-            f_out = self.f(inner)
-            state = self.xor_bytes(block, f_out)
-            
-        return state
-
-class TaskHandler(socketserver.BaseRequestHandler):
-    def handle(self):
-        try:
-            chall = Challenge()
-            
-            # 1. 生成一个较长的随机目标消息 (接近 MAX_BLOCKS)
-            # 这样 Append Attack 必然超长
-            target_blocks = MAX_BLOCKS
-            target_msg = os.urandom(target_blocks * BLOCK_SIZE)
-            target_hash = chall.H(target_msg)
-            
-            # 2. 生成大量泄露数据 (供矩阵求解)
-            known_pairs = []
-            seen_x = set()
-            while len(known_pairs) < PAIRS_COUNT:
-                x = os.urandom(16)
-                if x in seen_x: continue
-                seen_x.add(x)
-                known_pairs.append({"x": x.hex(), "fx": chall.f(x).hex()})
-            
-            # 3. 交互
-            self.send_line("=== Hash Collision: Hard Mode (Length Restricted) ===")
-            self.send_line(f"Find a second preimage with LENGTH <= {MAX_BLOCKS * BLOCK_SIZE} bytes.")
-            self.send_line("Hint: The simple append strategy will make the message too long!")
-            self.send_line("-" * 50)
-            
-            self.send_line(f"[+] Target Hash (Hex): {target_hash.hex()}")
-            # 注意：这里不需要发 Target Message 的原文，
-            # 因为矩阵攻击根本不需要原文，只需要 Hash 值。
-            # 如果你发了原文，append 攻击者会发现追加后长度变长了。
-            
-            self.send_line(f"[+] Leaked Pairs ({len(known_pairs)}):")
-            self.send_line(json.dumps(known_pairs))
-            self.send_line("-" * 50)
-            
-            self.send_line("[-] Input your forged message (Hex): ")
-            data = self.request.recv(65536).strip()
-            
+        # 允许用户询问有限次数的加密
+        print("You can query 2 pairs of plaintexts.")
+        for q in range(2):
             try:
-                user_msg = binascii.unhexlify(data)
-            except:
-                self.send_line("[!] Invalid Hex.")
-                return
-
-            # === 核心限制：长度检查 ===
-            # Append Attack 构造的消息长度是 len(target) + 32
-            # 我们这里限制必须 <= len(target)
-            if len(user_msg) > target_blocks * BLOCK_SIZE:
-                self.send_line(f"[!] Fail: Message too long! Max {target_blocks} blocks.")
-                self.send_line(f"    Your length: {len(user_msg)//16} blocks.")
-                return
-
-            # 验证哈希
-            user_hash = chall.H(user_msg)
-            if user_hash == target_hash:
-                self.send_line(f"[+] Flag: {FLAG}")
-            else:
-                self.send_line(f"[!] Fail. Hash mismatch.")
+                line = input(f"Query {q+1} (hex string, e.g., 00112233): ").strip()
+                p_bytes = bytes.fromhex(line)
+                if len(p_bytes) != 4: raise ValueError
                 
-        except Exception as e:
-            self.send_line(f"[!] Error: {e}")
-        finally:
-            self.request.close()
+                p = tuple(p_bytes)
+                if is_real:
+                    c = encrypt_phigfs(p, round_keys)
+                else:
+                    # 模拟随机置换（简化版）
+                    c = tuple(random.getrandbits(8) for _ in range(4))
+                
+                print(f"Result: {bytes(c).hex()}")
+            except:
+                print("Invalid input. Game over.")
+                return
 
-    def send_line(self, text):
-        try:
-            self.request.sendall((text + "\n").encode())
-        except: pass
+        choice = input("Is this [R]EAL PHIGFS or [F]AKE random? (R/F): ").strip().upper()
+        if (choice == 'R' and is_real) or (choice == 'F' and not is_real):
+            print("Correct!\n")
+        else:
+            print("Wrong! Philip laughs at you.")
+            return
 
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    pass
+    print(f"Congratulations! Here is your Flag: {FLAG}")
 
 if __name__ == "__main__":
-    socketserver.TCPServer.allow_reuse_address = True
-    server = ThreadedTCPServer(("0.0.0.0", 9999), TaskHandler)
-    server.serve_forever()
+    main()
