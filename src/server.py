@@ -1,124 +1,99 @@
-#!/usr/bin/env python3
 import os
 import sys
-import socketserver
-import binascii
 import random
-import json
+from sage.all import *
 
-# ================= CONFIGURATION =================
-FLAG = os.environ.get("GZCTF_FLAG", "flag{PH1GFS_M4tr1x_H4s_Inv4r1ant_Subsp4c3}")
-ROUNDS_TO_WIN = 50  # 需要连续猜对的次数
-QUERIES_PER_ROUND = 2  # 每轮允许的明文查询次数
-# =================================================
+# 获取 GZCTF 动态注入的 FLAG，本地测试时回退到默认值
+FLAG = os.getenv("FLAG", "flag{d3crypt10n_f41lur3_1s_f4t4l_t0_ntru}").encode()
 
-class PHIGFS:
-    def __init__(self):
-        # 按照竞赛设定，S盒可以是随机但固定的
-        self.sbox = list(range(256))
-        random.seed(2022)
-        random.shuffle(self.sbox)
-        # 具有漏洞的 A'' 矩阵
-        self.matrix = [
-            [0, 1, 1, 1],
-            [1, 1, 1, 0],
-            [1, 1, 0, 1],
-            [1, 0, 1, 1]
-        ]
+N = 167
+p = 3
+q = 128
+df = 61
+dg = 45 
+dr = 45
 
-    def _apply_matrix(self, v):
-        res = [0, 0, 0, 0]
-        for i in range(4):
-            for j in range(4):
-                if self.matrix[i][j]:
-                    res[i] ^= v[j]
-        return res
+Zx.<x> = ZZ[]
+Rq = PolynomialRing(Zmod(q), 'x').quotient(x^N - 1)
+Rp = PolynomialRing(Zmod(p), 'x').quotient(x^N - 1)
 
-    def encrypt(self, block, round_keys):
-        """实现 PHIGFS 8轮加密"""
-        state = list(block)
-        for r in range(8):
-            x3, x2, x1, x0 = state
-            k1, k0 = round_keys[r]
-            
-            # 非线性层：y2 = x2 ⊕ b(x3 ⊕ k1), y0 = x0 ⊕ b(x1 ⊕ k0)
-            y2 = x2 ^ self.sbox[x3 ^ k1]
-            y0 = x0 ^ self.sbox[x1 ^ k0]
-            
-            # 矩阵扩散层
-            state = self._apply_matrix([x3, y2, x1, y0])
-        return bytes(state)
+def print_out(msg):
+    """带 flush 的输出，防止 socat 缓冲导致客户端卡死"""
+    print(msg, flush=True)
 
-class TaskHandler(socketserver.BaseRequestHandler):
-    def handle(self):
+def gen_ternary(num_ones, num_neg_ones):
+    poly = [1]*num_ones + [-1]*num_neg_ones + [0]*(N - num_ones - num_neg_ones)
+    random.shuffle(poly)
+    return Zx(poly)
+
+def keygen():
+    while True:
+        f = gen_ternary(df, df - 1)
         try:
-            chall = PHIGFS()
-            self.send_line("=== PHIGFS Distinguisher Challenge: Hard Mode ===")
-            self.send_line(f"Successfully identify the algorithm {ROUNDS_TO_WIN} times to get the Flag.")
-            self.send_line("In each round, you can query 2 plaintexts (4-byte hex).")
-            self.send_line("-" * 50)
+            Fq = Rq(f)^-1
+            Fp = Rp(f)^-1
+            break
+        except ZeroDivisionError:
+            continue
+    g = gen_ternary(dg, dg)
+    h = Rq(p) * Rq(g) * Fq
+    return f, Fp, h
 
-            for i in range(ROUNDS_TO_WIN):
-                self.send_line(f"[Round {i+1}/{ROUNDS_TO_WIN}]")
+def encrypt(m_poly, h):
+    r = gen_ternary(dr, dr)
+    c = Rq(r) * h + Rq(m_poly)
+    return c
+
+def decrypt(c, f, Fp):
+    a = Rq(c) * Rq(f)
+    a_lifted = [((int(a[i]) + q//2) % q) - q//2 for i in range(N)]
+    a_poly = Zx(a_lifted)
+    m_dec = Rp(a_poly) * Fp
+    m_lifted = [((int(m_dec[i]) + p//2) % p) - p//2 for i in range(N)]
+    return Zx(m_lifted)
+
+def flag_to_poly(flag: bytes):
+    bits = ''.join([bin(b)[2:].zfill(8) for b in flag])
+    poly = [1 if bit == '1' else -1 for bit in bits]
+    poly += [0] * (N - len(poly))
+    return Zx(poly)
+
+def main():
+    print_out("[*] Generating Post-Quantum Keys...")
+    f, Fp, h = keygen()
+    
+    m_flag = flag_to_poly(FLAG)
+    c_flag = encrypt(m_flag, h)
+    
+    print_out(f"[+] Public Key (h): {h.list()}")
+    print_out(f"[+] Encrypted Flag: {c_flag.list()}")
+    print_out("-" * 50)
+    print_out("Welcome to the NTRU Decryption Oracle!")
+    print_out("You can query up to 5000 times.")
+    
+    for _ in range(5000):
+        try:
+            print_out("Send ciphertext (comma separated integers) > ")
+            req = sys.stdin.readline().strip()
+            if not req:
+                break
                 
-                # 随机决定本轮是真实算法还是随机置换
-                is_real = random.getrandbits(1)
-                # 为本轮生成随机轮密钥
-                round_keys = [(random.getrandbits(8), random.getrandbits(8)) for _ in range(8)]
+            c_list = [int(x.strip()) for x in req.split(",")]
+            if len(c_list) > N:
+                print_out("[-] Ciphertext too long.")
+                continue
                 
-                # 查询阶段
-                for q in range(QUERIES_PER_ROUND):
-                    self.send_line(f"[-] Query {q+1} (Hex, 4 bytes): ")
-                    line = self.request.recv(1024).strip().decode()
-                    if not line: return
-                    
-                    try:
-                        p = binascii.unhexlify(line)
-                        if len(p) != 4: raise ValueError
-                    except:
-                        self.send_line("[!] Invalid input.")
-                        return
-
-                    if is_real:
-                        res = chall.encrypt(p, round_keys)
-                    else:
-                        # 随机模式：返回真随机字节
-                        res = os.urandom(4)
-                    
-                    self.send_line(f"Result: {res.hex()}")
-
-                # 提交答案阶段
-                self.send_line("[?] Is this [R]EAL PHIGFS or [F]AKE Random? (R/F): ")
-                choice = self.request.recv(1024).strip().decode().upper()
+            c_query = Rq(c_list)
+            
+            if c_query == c_flag:
+                print_out("[-] Oracle refuses to decrypt the intercepted flag!")
+                continue
                 
-                correct = (choice == 'R' and is_real) or (choice == 'F' and not is_real)
-                
-                if correct:
-                    self.send_line("[+] Correct!")
-                else:
-                    self.send_line("[!] Wrong! Philip's cipher remains a mystery to you.")
-                    return
-
-            # 全部通过
-            self.send_line("-" * 50)
-            self.send_line(f"[***] Congratulations! Your Flag: {FLAG}")
-
+            m_prime = decrypt(c_query, f, Fp)
+            print_out(f"Decrypted: {m_prime.list()}")
         except Exception as e:
-            # 避免泄露服务端错误，仅打印提示
-            pass
-        finally:
-            self.request.close()
-
-    def send_line(self, text):
-        try:
-            self.request.sendall((text + "\n").encode())
-        except:
-            pass
-
-class ThreadedTCPServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    allow_reuse_address = True
+            print_out("[-] Invalid input or connection closed.")
+            break
 
 if __name__ == "__main__":
-    # 监听 9999 端口，GZCTF 映射此端口即可
-    server = ThreadedTCPServer(("0.0.0.0", 9999), TaskHandler)
-    server.serve_forever()
+    main()
