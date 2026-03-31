@@ -1,22 +1,18 @@
 #!/bin/sh
 set -e
 
-echo "=== Starting Guess Number Game ===" >&2
+echo "=== Starting NTRU Decryption Oracle ===" >&2
 
+# 处理 GZCTF 动态 FLAG
 if [ "$GZCTF_FLAG" ]; then
+    export FLAG="$GZCTF_FLAG"
     echo "Using GZCTF_FLAG from environment" >&2
-elif [ "$FLAG" ]; then
-    export GZCTF_FLAG="$FLAG"
-    echo "Using FLAG from environment" >&2
 else
-    export GZCTF_FLAG="sdpcsec{HasH_1sn0t_e1asy[TEAM_HASH]}"
+    export FLAG="flag{local_test_flag_for_ntru}"
     echo "Using default flag template" >&2
 fi
 
-echo "Starting Python server on port 9999..." >&2
+echo "Listening on port 9999 with socat..." >&2
 
-
-cd /home/ctf
-
-
-exec python server.py
+# 使用 socat 监听 9999 端口，并让每一次连接都启动一个独立的 sage 进程处理
+exec socat TCP-LISTEN:9999,fork,reuseaddr EXEC:"sage /home/ctf/server.sage",pty,stderr,echo=0
