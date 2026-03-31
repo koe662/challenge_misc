@@ -1,23 +1,28 @@
-FROM python:3.9-slim
+# 必须使用 SageMath 官方镜像
+FROM sagemath/sagemath:latest
 
-# 使用国内源
-RUN echo "deb http://mirrors.ustc.edu.cn/debian/ bullseye main" > /etc/apt/sources.list && \
-    echo "deb http://mirrors.ustc.edu.cn/debian-security bullseye-security main" >> /etc/apt/sources.list
+USER root
 
-RUN apt-get update && apt-get install -y socat netcat-openbsd
+# 替换为国内源 (Sage 镜像底层通常是 Ubuntu)
+RUN sed -i 's/archive.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list && \
+    sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list
 
-# 使用国内pip源
-RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-    pycryptodome sympy
+# 安装 socat 和 dos2unix (防止 Windows 下写的 sh 脚本在 Linux 下报错)
+RUN apt-get update && apt-get install -y socat dos2unix && rm -rf /var/lib/apt/lists/*
 
-RUN useradd -m ctf
 WORKDIR /home/ctf
 
-COPY ./src/server.py /home/ctf/server.py
+# 拷贝你的题目代码和启动脚本
+COPY ./src/server.sage /home/ctf/server.sage
 COPY ./service/docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
 
-USER ctf
+# 修复换行符并赋予执行权限，移交权限给 sage 默认用户
+RUN dos2unix /docker-entrypoint.sh && \
+    chmod +x /docker-entrypoint.sh && \
+    chown -R sage:sage /home/ctf
+
+# 切换回低权限用户，保证容器安全
+USER sage
 
 EXPOSE 9999
 
