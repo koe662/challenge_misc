@@ -18,3 +18,5 @@ echo "Listening on port 9999 with socat..." >&2
 
 # 2. socat 接管端口，每次连入启动一个 sage 进程进行交互
 exec socat TCP-LISTEN:9999,fork,reuseaddr EXEC:"sage /home/ctf/server.sage",pty,stderr,echo=0
+
+
