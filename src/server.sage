@@ -1,156 +1,105 @@
 #!/usr/bin/env sage
-import os
-import sys
-import time
-import traceback
+import socket
+import signal
+import re
 from sage.all import *
 
-# ==========================================
-# 终极 IO 修复：重写 print 函数强制 flush
-# 解决 socat/xinetd 环境下数据被憋在缓冲区导致直接断开的问题
-# ==========================================
-import builtins
-def ctf_print(*args, **kwargs):
-    kwargs['flush'] = True
-    builtins._original_print(*args, **kwargs)
-builtins._original_print = builtins.print
-builtins.print = ctf_print
+# ================= 配置区 =================
+PORT = 35654
+TIMEOUT = 120  # 120秒限时
+P_VAL = 185752092671 # 38-bit prime
+FLAG = "flag{Sage_Verified_Isogeny_Cycle_2026}"
+# =========================================
 
-# 动态获取平台的 FLAG
-FLAG = os.environ.get("FLAG", "flag{test_guid_for_local_debugging}")
-
-def get_phi2():
-    """返回经典的 2-同源模多项式"""
-    R.<X, Y> = PolynomialRing(ZZ)
-    Phi_2 = X^3 + Y^3 - X^2*Y^2 + 1488*(X^2*Y + X*Y^2) - 162000*(X^2 + Y^2) + \
-            40773375*X*Y + 8748000000*(X + Y) - 157464000000000
-    return Phi_2
-
-def generate_challenge(round_num):
+def verify_isogeny_cycle(p, path_list):
     """
-    生成题目参数。
-    包含素数安全性检查与同源图随机游走逻辑。
+    使用 SageMath 内置逻辑严格校验同源环路
     """
-    if round_num == 1:
-        smooth_base = 2**20 * 3**10   # 基础平滑度 (~35 bits)
-        steps = 20
-    elif round_num == 2:
-        smooth_base = 2**30 * 3**15   # 基础平滑度 (~53 bits)
-        steps = 40
-    else:
-        smooth_base = 2**40 * 3**20   # 基础平滑度 (~71 bits)
-        steps = 60
-        
-    # 【修复 1】：动态寻找一个合法的素数 p
-    f = 1
-    while True:
-        p = f * smooth_base - 1
-        if p % 4 == 3 and is_prime(p):
-            break
-        f += 1
-        
-    # 定义有限域与初始超奇异椭圆曲线 (j=1728)
-    Fp2.<i> = GF(p^2, modulus=x^2+1)
-    E = EllipticCurve(Fp2, [1, 0])
-    j_current = E.j_invariant()
-    
-    Phi_2 = get_phi2()
-    prev_j = j_current
-    
-    # 【修复 2】：显式定义 Fp2 上的单变量多项式环 Y，解决 .roots() 报错
-    PR.<Y> = PolynomialRing(Fp2) 
-    
-    for _ in range(steps):
-        # 强制将二元多项式 Phi_2 降维到单变量多项式环 PR 上
-        f_poly = Phi_2(X=j_current, Y=Y) 
-        roots = [r[0] for r in f_poly.roots()]
-        
-        # 防止直接回退
-        next_js = [r for r in roots if r != prev_j]
-        if not next_js:
-            next_js = roots
-        prev_j = j_current
-        j_current = choice(next_js)
-        
-    return p, j_current
-
-def check_solution(submitted_seq, p, target_j):
-    """验证选手提交的序列是否构成一条无回溯的闭合自同态环路"""
-    if len(submitted_seq) < 3: 
-        return False
-        
-    Fp2.<i> = GF(p^2, modulus=x^2+1)
-    
     try:
-        j_seq = [Fp2(j_str.replace(' ', '')) for j_str in submitted_seq]
-    except Exception:
-        return False
+        Fp2.<i> = GF(p^2, modulus=x^2+1)
+        # 将字符串解析为 Fp2 元素
+        def parse_j(s):
+            s = s.replace(' ', '').replace('*i', '*I').replace('i', 'I')
+            return Fp2(eval(s, {'I': i}))
+
+        js = [parse_j(n) for n in path_list]
         
-    # 验证起点和终点
-    if j_seq[0] != target_j or j_seq[-1] != target_j: 
-        return False
-        
-    Phi_2 = get_phi2()
-    for k in range(len(j_seq) - 1):
-        j1 = j_seq[k]
-        j2 = j_seq[k+1]
-        
-        # 拒绝立即回溯
-        if k > 0 and j_seq[k+1] == j_seq[k-1]: 
-            return False 
+        if len(js) < 5:
+            return False, "路径太短，不符合环路要求。"
+        if js[0] != js[-1]:
+            return False, "首尾不一致，这不是一个环。"
+
+        # 预载 2-阶模多项式 (Modular Polynomial)
+        R.<X, Y> = PolynomialRing(Fp2, 2)
+        Phi2 = sum(c * X^exp[0] * Y^exp[1] for exp, c in classical_modular_polynomial(2).dict().items())
+
+        for k in range(len(js) - 1):
+            # 1. 校验非回溯: j_{k+1} != j_{k-1}
+            if k > 0 and js[k+1] == js[k-1]:
+                return False, f"检测到回溯！位置: {k} -> {k+1}"
             
-        # 验证相邻两点确实存在 2-同源关系
-        if Phi_2(X=j1, Y=j2) != 0: 
-            return False
-            
-    return True
+            # 2. 校验同源性: Phi_2(j_k, j_{k+1}) == 0
+            if Phi2(js[k], js[k+1]) != 0:
+                return False, f"无效同源跳跃！从 {js[k]} 到 {js[k+1]}"
+        
+        return True, "验证通过"
+    except Exception as e:
+        return False, f"校验过程出错: {str(e)}"
 
-def main():
-    print("Welcome to the Abyssal Splittings Challenge (PQCrypto 2026 Edition)!")
-    print("Standard cycle-finding will melt your RAM. You need TRUE 2D Jacobian Splittings.\n")
+def handle_client(conn):
+    def timeout_handler(signum, frame):
+        raise TimeoutError()
 
-    start_time = time.time() 
-    
-    for round_num in range(1, 4):
-        print(f"Generating Round {round_num} parameters... (This might take a few seconds)")
-        p, target_j = generate_challenge(round_num)
+    signal.signal(signal.SIGALRM, timeout_handler)
+    signal.alarm(TIMEOUT)
 
-        print(f"--- Round {round_num} ---")
-        print(f"Prime p = {p}")
-        print(f"Target j = {target_j}")
-        print(f"Find a non-backtracking cycle for this curve.")
+    try:
+        # 初始欢迎语
+        welcome = (
+            "[SERVER] Welcome to the Abyssal Splittings Challenge (PQCrypto 2026 Edition)!\n"
+            "[SERVER] Standard cycle-finding will melt your RAM. You need TRUE 2D Jacobian Splittings.\n"
+            f"[SERVER] --- Round 1 ---\n"
+            f"[SERVER] Prime p = {P_VAL}\n"
+            f"[SERVER] Target j = 140087322762*i + 41012056975\n"
+            "[SERVER] Submit j-invariant cycle (comma separated): "
+        )
+        conn.sendall(welcome.encode())
 
-        try:
-            ans = input("Submit j-invariant cycle (comma separated): ").strip()
-            submitted_seq = ans.split(',')
-        except EOFError:
-            print("Connection closed by client.")
-            sys.exit(1)
-        except Exception:
-            print("Invalid input format!")
-            sys.exit(1)
+        # 接收 Payload
+        data = conn.recv(65536).decode().strip()
+        if not data: return
 
-        if not check_solution(submitted_seq, p, target_j):
-            print("Wrong cycle or invalid path!")
-            sys.exit(1)
+        # 提取路径
+        path_list = data.split(',')
+        
+        # 启动 Sage 校验
+        print(f"[*] 正在验证来自客户端的路径 (长度: {len(path_list)})...")
+        is_valid, reason = verify_isogeny_cycle(P_VAL, path_list)
 
-        # 时间放宽到 300 秒，给足解题脚本运行时间
-        if time.time() - start_time > 300:
-            print("Timeout! You are too slow. Splitting is much faster.")
-            sys.exit(1)
+        if is_valid:
+            conn.sendall(f"\nCorrect!\nMAGNIFICENT! Flag: {FLAG}\n".encode())
+            print("[+] 验证成功，已下发 Flag")
+        else:
+            conn.sendall(f"\nWrong! Reason: {reason}\n".encode())
+            print(f"[-] 验证失败: {reason}")
 
-        print("Correct!\n")
+    except TimeoutError:
+        conn.sendall(b"\nTimeout! You are too slow.\n")
+    except Exception as e:
+        print(f"[!] 错误: {e}")
+    finally:
+        signal.alarm(0)
+        conn.close()
 
-    print(f"Congratulations! Here is your flag: {FLAG}")
+def start_server():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(('0.0.0.0', PORT))
+    s.listen(5)
+    print(f"[*] Sage 靶机已启动，监听端口: {PORT} (限时 {TIMEOUT}s)")
+    while True:
+        conn, addr = s.accept()
+        handle_client(conn)
 
 if __name__ == "__main__":
-    try:
-        # 强制标准输出与错误输出为行缓冲
-        sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
-        sys.stderr = os.fdopen(sys.stderr.fileno(), 'w', buffering=1)
-        main()
-    except Exception as e:
-        # 【修复 3】：全局异常捕获，如果发生任何未知错误，将其打印给连接的客户端
-        print(f"\n[SERVER FATAL ERROR] 靶机内部发生致命错误: {e}")
-        traceback.print_exc(file=sys.stdout)
-        sys.exit(1)
+    start_server()
