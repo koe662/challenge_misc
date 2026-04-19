@@ -2,83 +2,85 @@
 import socket
 import signal
 import re
+import sys
 from sage.all import *
 
-# ================= 配置区 =================
+# ================= 题目核心配置 =================
 PORT = 35654
-TIMEOUT = 120  # 120秒限时
-P_VAL = 185752092671 # 38-bit prime
-FLAG = "flag{Sage_Verified_Isogeny_Cycle_2026}"
-# =========================================
+TIMEOUT = 120
+P_ROUND1 = 185752092671
+# 题目给出的目标 j 不变量 (j = 140087322762*i + 41012056975)
+TARGET_J_STR = "140087322762*i + 41012056975"
+FLAG = "flag{Ethan_Catch_Sage10_8_GZCTF_Verified_2026}"
+# ===============================================
 
-def verify_isogeny_cycle(p, path_list):
+def verify_cycle(p, path_str):
     """
-    使用 SageMath 内置逻辑严格校验同源环路
+    严格按照同源图规则校验：
+    1. 每一跳必须是 degree-2 同源 (满足 Phi_2 模多项式)
+    2. 严禁回溯: j_{k+1} != j_{k-1}
+    3. 闭环: j_0 == j_n
     """
     try:
         Fp2.<i> = GF(p^2, modulus=x^2+1)
-        # 将字符串解析为 Fp2 元素
-        def parse_j(s):
-            s = s.replace(' ', '').replace('*i', '*I').replace('i', 'I')
-            return Fp2(eval(s, {'I': i}))
+        # 清洗并解析输入
+        raw_js = path_str.split(',')
+        js = []
+        for s in raw_js:
+            s_clean = s.replace(' ', '').replace('*i', '*I').replace('i', 'I')
+            js.append(Fp2(eval(s_clean, {'I': i})))
 
-        js = [parse_j(n) for n in path_list]
-        
-        if len(js) < 5:
-            return False, "路径太短，不符合环路要求。"
-        if js[0] != js[-1]:
-            return False, "首尾不一致，这不是一个环。"
+        if len(js) < 10: return False, "路径太短，这不是一个有效的自同态环。"
+        if js[0] != js[-1]: return False, "首尾不连贯，这不是一个闭合环路。"
 
-        # 预载 2-阶模多项式 (Modular Polynomial)
+        # 加载 2-阶模多项式: $$\Phi_2(X, Y) = 0$$
         R.<X, Y> = PolynomialRing(Fp2, 2)
         Phi2 = sum(c * X^exp[0] * Y^exp[1] for exp, c in classical_modular_polynomial(2).dict().items())
 
         for k in range(len(js) - 1):
-            # 1. 校验非回溯: j_{k+1} != j_{k-1}
+            # 1. 非回溯校验
             if k > 0 and js[k+1] == js[k-1]:
-                return False, f"检测到回溯！位置: {k} -> {k+1}"
+                return False, f"检测到回溯跳转: 节点 {k} 到 {k+1}"
             
-            # 2. 校验同源性: Phi_2(j_k, j_{k+1}) == 0
+            # 2. 同源性校验: Phi2(j_k, j_{k+1}) == 0
             if Phi2(js[k], js[k+1]) != 0:
-                return False, f"无效同源跳跃！从 {js[k]} 到 {js[k+1]}"
+                return False, f"非法跳转: 节点 {js[k]} 与 {js[k+1]} 之间不存在 2-同源边"
         
-        return True, "验证通过"
+        return True, "Success"
     except Exception as e:
-        return False, f"校验过程出错: {str(e)}"
+        return False, f"解析异常: {str(e)}"
 
-def handle_client(conn):
+def handle_connection(conn):
+    # 强制超时处理
     def timeout_handler(signum, frame):
-        raise TimeoutError()
+        raise TimeoutError("Timeout! Splitting is faster.")
 
     signal.signal(signal.SIGALRM, timeout_handler)
     signal.alarm(TIMEOUT)
 
     try:
-        # 初始欢迎语
         welcome = (
-            "[SERVER] Welcome to the Abyssal Splittings Challenge (PQCrypto 2026 Edition)!\n"
-            "[SERVER] Standard cycle-finding will melt your RAM. You need TRUE 2D Jacobian Splittings.\n"
-            f"[SERVER] --- Round 1 ---\n"
-            f"[SERVER] Prime p = {P_VAL}\n"
-            f"[SERVER] Target j = 140087322762*i + 41012056975\n"
-            "[SERVER] Submit j-invariant cycle (comma separated): "
+            "Welcome to the Abyssal Splittings Challenge (PQCrypto 2026 Edition)!\n"
+            "Standard cycle-finding will melt your RAM. You need TRUE 2D Jacobian Splittings.\n"
+            "Generating Round 1 parameters... (This might take a few seconds)\n"
+            "--- Round 1 ---\n"
+            f"Prime p = {P_ROUND1}\n"
+            f"Target j = {TARGET_J_STR}\n"
+            "Find a non-backtracking cycle for this curve.\n"
+            "Submit j-invariant cycle (comma separated): "
         )
         conn.sendall(welcome.encode())
 
-        # 接收 Payload
-        data = conn.recv(65536).decode().strip()
-        if not data: return
+        # 接收答案
+        ans = conn.recv(65536).decode().strip()
+        if not ans: return
 
-        # 提取路径
-        path_list = data.split(',')
-        
-        # 启动 Sage 校验
-        print(f"[*] 正在验证来自客户端的路径 (长度: {len(path_list)})...")
-        is_valid, reason = verify_isogeny_cycle(P_VAL, path_list)
+        print(f"[*] 收到 Payload，长度: {len(ans)}。正在调用 Sage 引擎校验...")
+        ok, reason = verify_cycle(P_ROUND1, ans)
 
-        if is_valid:
+        if ok:
             conn.sendall(f"\nCorrect!\nMAGNIFICENT! Flag: {FLAG}\n".encode())
-            print("[+] 验证成功，已下发 Flag")
+            print("[+] 验证通过，已发送 Flag。")
         else:
             conn.sendall(f"\nWrong! Reason: {reason}\n".encode())
             print(f"[-] 验证失败: {reason}")
@@ -86,20 +88,29 @@ def handle_client(conn):
     except TimeoutError:
         conn.sendall(b"\nTimeout! You are too slow.\n")
     except Exception as e:
-        print(f"[!] 错误: {e}")
+        print(f"[!] 处理异常: {e}")
     finally:
         signal.alarm(0)
         conn.close()
 
 def start_server():
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    # 强制开启端口重用 (解决 Address already in use)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(('0.0.0.0', PORT))
-    s.listen(5)
-    print(f"[*] Sage 靶机已启动，监听端口: {PORT} (限时 {TIMEOUT}s)")
+    
+    try:
+        s.bind(('0.0.0.0', PORT))
+        s.listen(5)
+        print(f"[*] GZCTF 风格 Sage 靶机启动成功，监听端口: {PORT}")
+        print(f"[*] 算力环境: SageMath 10.8 / Python 3.14")
+    except Exception as e:
+        print(f"[!] 绑定端口失败: {e}")
+        return
+
     while True:
         conn, addr = s.accept()
-        handle_client(conn)
+        print(f"[+] 收到攻击连接: {addr}")
+        handle_connection(conn)
 
 if __name__ == "__main__":
     start_server()
